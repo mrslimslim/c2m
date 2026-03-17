@@ -1,0 +1,17 @@
+{
+  "name": "codepilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile command center for AI coding agents",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm run test:unit",
+    "test:unit": "pnpm -r build && pnpm --filter @codepilot/bridge test",
+    "check": "pnpm run test:unit",
+    "dev": "pnpm -r --parallel dev",
+    "clean": "pnpm -r clean"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

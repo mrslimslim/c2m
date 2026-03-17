@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "Bash(npm:*)",
+      "Bash(codex:*)",
+      "Bash(mkdir -p /tmp/codex-sdk-exploration)",
+      "Read(//tmp/**)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm:*)",
+      "Bash(node:*)",
+      "Bash(gtimeout 5:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx tsx:*)"
+    ]
+  }
+}
