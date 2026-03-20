@@ -5,3 +5,7 @@ dist/
 .DS_Store
 .env
 .env.local
+.build/*
+packages/ios/**/.build/
+packages/ios/**/.swiftpm/
+packages/ios/**/xcuserdata/

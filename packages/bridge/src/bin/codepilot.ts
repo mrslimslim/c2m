@@ -9,6 +9,7 @@
  *   npx codepilot --agent claude      # use Claude Code
  *   npx codepilot --port 19260        # custom port
  *   npx codepilot --dir /path/to/proj # project directory
+ *   npx codepilot --tunnel            # expose via Cloudflare Tunnel
  *   npx codepilot --relay             # use Relay (cross-network)
  *   npx codepilot --relay-url https://custom-relay.com  # custom Relay
  */
@@ -26,19 +27,24 @@ program
   .version("0.1.0")
   .option("-a, --agent <type>", "Agent type: codex | claude | auto", "auto")
   .option("-p, --port <number>", "WebSocket port", "19260")
+  .option("-H, --host <address>", "Bind address (use :: for IPv6 dual-stack)", "0.0.0.0")
   .option("-d, --dir <path>", "Working directory", ".")
+  .option("--tunnel", "Expose via Cloudflare Tunnel (requires cloudflared)")
   .option("--relay", "Use Relay server for cross-network connections")
   .option("--relay-url <url>", "Custom Relay server URL")
   .action(
     async (opts: {
       agent: string;
       port: string;
+      host: string;
       dir: string;
+      tunnel?: boolean;
       relay?: boolean;
       relayUrl?: string;
     }) => {
       const agent = opts.agent as "codex" | "claude" | "auto";
       const port = parseInt(opts.port, 10);
+      const host = opts.host;
       const workDir = resolve(opts.dir);
       const relay = opts.relay || !!opts.relayUrl;
 
@@ -56,6 +62,8 @@ program
         if (opts.relayUrl) {
           log.info(`Relay URL: ${opts.relayUrl}`);
         }
+      } else if (opts.tunnel) {
+        log.info(`Mode: Tunnel (Cloudflare)`);
       } else {
         log.info(`Mode: LAN (port ${port})`);
       }
@@ -65,7 +73,9 @@ program
         const bridge = new Bridge({
           agent,
           port,
+          host,
           workDir,
+          tunnel: opts.tunnel,
           relay,
           relayUrl: opts.relayUrl,
         });

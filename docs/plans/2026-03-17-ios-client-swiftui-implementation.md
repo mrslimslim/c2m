@@ -15,13 +15,13 @@
 ### Task 1: Create the shared Swift package and protocol model surface
 
 **Files:**
-- Create: `apps/ios/CodePilotKit/Package.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotProtocol/BridgeMessage.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotProtocol/PhoneMessage.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotProtocol/AgentEvent.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotProtocol/SessionInfo.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotProtocol/TransportFrames.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotProtocolTests/ProtocolModelTests.swift`
+- Create: `packages/ios/CodePilotKit/Package.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotProtocol/BridgeMessage.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotProtocol/PhoneMessage.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotProtocol/AgentEvent.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotProtocol/SessionInfo.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotProtocol/TransportFrames.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotProtocolTests/ProtocolModelTests.swift`
 
 **Step 1: Write the failing test**
 
@@ -34,7 +34,7 @@
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter ProtocolModelTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter ProtocolModelTests`
 
 Expected: FAIL because the package and protocol models do not exist yet.
 
@@ -49,24 +49,24 @@ Expected: FAIL because the package and protocol models do not exist yet.
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter ProtocolModelTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter ProtocolModelTests`
 
 Expected: PASS for all protocol model tests.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotKit
+git add packages/ios/CodePilotKit
 git commit -m "feat: add iOS protocol package"
 ```
 
 ### Task 2: Implement E2E crypto compatibility and encrypted wire handling
 
 **Files:**
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/E2ECryptoSession.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/EncryptedWireCodec.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/CryptoCompatibilityTests.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/Fixtures/crypto-fixtures.json`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/E2ECryptoSession.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/EncryptedWireCodec.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/CryptoCompatibilityTests.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/Fixtures/crypto-fixtures.json`
 
 **Step 1: Write the failing test**
 
@@ -78,7 +78,7 @@ git commit -m "feat: add iOS protocol package"
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter CryptoCompatibilityTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter CryptoCompatibilityTests`
 
 Expected: FAIL because crypto session and wire codec types do not exist yet.
 
@@ -93,28 +93,28 @@ Expected: FAIL because crypto session and wire codec types do not exist yet.
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter CryptoCompatibilityTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter CryptoCompatibilityTests`
 
 Expected: PASS and prove Swift crypto is wire-compatible with the bridge.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotKit
+git add packages/ios/CodePilotKit
 git commit -m "feat: add iOS E2E crypto compatibility"
 ```
 
 ### Task 3: Build transport abstractions and the connection state machine
 
 **Files:**
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/ConnectionConfig.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/ConnectionState.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/BridgeTransport.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/URLSessionBridgeTransport.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/BridgeConnectionController.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/DiagnosticsStore.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/BridgeConnectionControllerTests.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/TestDoubles/MockBridgeTransport.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/ConnectionConfig.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/ConnectionState.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/BridgeTransport.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/URLSessionBridgeTransport.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/BridgeConnectionController.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/DiagnosticsStore.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/BridgeConnectionControllerTests.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/TestDoubles/MockBridgeTransport.swift`
 
 **Step 1: Write the failing test**
 
@@ -129,7 +129,7 @@ git commit -m "feat: add iOS E2E crypto compatibility"
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter BridgeConnectionControllerTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter BridgeConnectionControllerTests`
 
 Expected: FAIL because connection controller and transport abstractions do not exist yet.
 
@@ -143,27 +143,27 @@ Expected: FAIL because connection controller and transport abstractions do not e
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter BridgeConnectionControllerTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter BridgeConnectionControllerTests`
 
 Expected: PASS for all state-machine scenarios.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotKit
+git add packages/ios/CodePilotKit
 git commit -m "feat: add iOS connection controller"
 ```
 
 ### Task 4: Add session, timeline, cancel, and file state management
 
 **Files:**
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/SessionStore.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/TimelineStore.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/FileStore.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotFeatures/Sessions/SessionsViewModel.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotFeatures/Sessions/SessionDetailViewModel.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/SessionRoutingTests.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotFeaturesTests/SessionDetailViewModelTests.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/SessionStore.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/TimelineStore.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/FileStore.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotFeatures/Sessions/SessionsViewModel.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotFeatures/Sessions/SessionDetailViewModel.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/SessionRoutingTests.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotFeaturesTests/SessionDetailViewModelTests.swift`
 
 **Step 1: Write the failing test**
 
@@ -177,8 +177,8 @@ git commit -m "feat: add iOS connection controller"
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter SessionRoutingTests`
-Run: `swift test --package-path apps/ios/CodePilotKit --filter SessionDetailViewModelTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter SessionRoutingTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter SessionDetailViewModelTests`
 
 Expected: FAIL because the session stores and view models do not exist yet.
 
@@ -194,30 +194,30 @@ Expected: FAIL because the session stores and view models do not exist yet.
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit`
+Run: `swift test --package-path packages/ios/CodePilotKit`
 
 Expected: PASS for protocol, crypto, connection, and session-routing tests together.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotKit
+git add packages/ios/CodePilotKit
 git commit -m "feat: add iOS session and timeline state"
 ```
 
 ### Task 5: Create the app target and connection, session, and file-viewer UI
 
 **Files:**
-- Create: `apps/ios/CodePilotApp/CodePilot.xcodeproj/project.pbxproj`
-- Create: `apps/ios/CodePilotApp/CodePilot/App/CodePilotApp.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/App/RootView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Connections/ConnectionsView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Connections/QRScannerView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Sessions/SessionsView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Sessions/SessionDetailView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Files/FileViewerView.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Resources/Info.plist`
-- Create: `apps/ios/CodePilotApp/CodePilot/Resources/PrivacyInfo.xcprivacy`
+- Create: `packages/ios/CodePilotApp/CodePilot.xcodeproj/project.pbxproj`
+- Create: `packages/ios/CodePilotApp/CodePilot/App/CodePilotApp.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/App/RootView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Connections/ConnectionsView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Connections/QRScannerView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Sessions/SessionsView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Sessions/SessionDetailView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Files/FileViewerView.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Resources/Info.plist`
+- Create: `packages/ios/CodePilotApp/CodePilot/Resources/PrivacyInfo.xcprivacy`
 
 **Step 1: Write the failing test**
 
@@ -226,8 +226,8 @@ git commit -m "feat: add iOS session and timeline state"
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter Connection`
-Run: `xcodebuild -project apps/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter Connection`
+Run: `xcodebuild -project packages/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
 
 Expected: the Swift package parsing test fails or the Xcode build fails because the app target does not exist yet.
 
@@ -245,29 +245,29 @@ Expected: the Swift package parsing test fails or the Xcode build fails because 
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit`
-Run: `xcodebuild -project apps/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
+Run: `swift test --package-path packages/ios/CodePilotKit`
+Run: `xcodebuild -project packages/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
 
 Expected: package tests pass and the iOS app builds successfully for the simulator.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotApp apps/ios/CodePilotKit
+git add packages/ios/CodePilotApp packages/ios/CodePilotKit
 git commit -m "feat: add iOS app shell and primary views"
 ```
 
 ### Task 6: Add diagnostics, persistence, and TestFlight hardening
 
 **Files:**
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/SavedConnectionStore.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotCore/KeychainSecretStore.swift`
-- Create: `apps/ios/CodePilotKit/Sources/CodePilotFeatures/Diagnostics/DiagnosticsViewModel.swift`
-- Create: `apps/ios/CodePilotApp/CodePilot/Diagnostics/DiagnosticsView.swift`
-- Modify: `apps/ios/CodePilotApp/CodePilot/Resources/Info.plist`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/SavedConnectionStore.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotCore/KeychainSecretStore.swift`
+- Create: `packages/ios/CodePilotKit/Sources/CodePilotFeatures/Diagnostics/DiagnosticsViewModel.swift`
+- Create: `packages/ios/CodePilotApp/CodePilot/Diagnostics/DiagnosticsView.swift`
+- Modify: `packages/ios/CodePilotApp/CodePilot/Resources/Info.plist`
 - Create: `docs/ios-testing.md`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotCoreTests/SavedConnectionStoreTests.swift`
-- Create: `apps/ios/CodePilotKit/Tests/CodePilotFeaturesTests/DiagnosticsViewModelTests.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotCoreTests/SavedConnectionStoreTests.swift`
+- Create: `packages/ios/CodePilotKit/Tests/CodePilotFeaturesTests/DiagnosticsViewModelTests.swift`
 
 **Step 1: Write the failing test**
 
@@ -279,8 +279,8 @@ git commit -m "feat: add iOS app shell and primary views"
 
 **Step 2: Run test to verify it fails**
 
-Run: `swift test --package-path apps/ios/CodePilotKit --filter SavedConnectionStoreTests`
-Run: `swift test --package-path apps/ios/CodePilotKit --filter DiagnosticsViewModelTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter SavedConnectionStoreTests`
+Run: `swift test --package-path packages/ios/CodePilotKit --filter DiagnosticsViewModelTests`
 
 Expected: FAIL because persistence and diagnostics models do not exist yet.
 
@@ -293,14 +293,14 @@ Expected: FAIL because persistence and diagnostics models do not exist yet.
 
 **Step 4: Run test to verify it passes**
 
-Run: `swift test --package-path apps/ios/CodePilotKit`
-Run: `xcodebuild -project apps/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
+Run: `swift test --package-path packages/ios/CodePilotKit`
+Run: `xcodebuild -project packages/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
 
 Expected: all package tests pass, the app builds, and the repo contains a repeatable iOS manual test checklist.
 
 **Step 5: Commit**
 
 ```bash
-git add apps/ios/CodePilotApp apps/ios/CodePilotKit docs/ios-testing.md
+git add packages/ios/CodePilotApp packages/ios/CodePilotKit docs/ios-testing.md
 git commit -m "feat: harden iOS client for TestFlight"
 ```

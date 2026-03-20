@@ -13,7 +13,13 @@
       "Bash(node:*)",
       "Bash(gtimeout 5:*)",
       "Bash(npx tsc:*)",
-      "Bash(npx tsx:*)"
+      "Bash(npx tsx:*)",
+      "Bash(wc:*)",
+      "Bash(xcodebuild:*)",
+      "Bash(swift test:*)",
+      "Bash(xcrun simctl:*)",
+      "Bash(sips:*)",
+      "Bash(cliclick c:186,800:*)"
     ]
   }
 }

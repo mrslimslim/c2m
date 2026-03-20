@@ -170,8 +170,8 @@ Primary screens:
 
 ## Verification
 
-- `swift test --package-path apps/ios/CodePilotKit`
-- `xcodebuild -project apps/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
+- `swift test --package-path packages/ios/CodePilotKit`
+- `xcodebuild -project packages/ios/CodePilotApp/CodePilot.xcodeproj -scheme CodePilot -destination 'generic/platform=iOS Simulator' build`
 - manual LAN pairing with a running bridge
 - manual Relay pairing with a running relay channel
 - real-device checks for:

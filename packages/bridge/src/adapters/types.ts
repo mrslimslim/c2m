@@ -9,6 +9,10 @@ export interface SessionOptions {
   model?: string;
   /** Working directory for the agent */
   workDir: string;
+  /** Codex approval policy */
+  approvalPolicy?: string;
+  /** Codex sandbox mode */
+  sandboxMode?: string;
 }
 
 export interface AgentAdapter {

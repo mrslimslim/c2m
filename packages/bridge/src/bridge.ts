@@ -11,7 +11,7 @@
 import { resolve as resolvePath, relative } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import { extname } from "node:path";
-import type { AgentEvent, PhoneMessage, SessionInfo } from "@codepilot/protocol";
+import type { AgentEvent, PhoneMessage, SessionConfig, SessionInfo } from "@codepilot/protocol";
 import type { AgentAdapter, SessionOptions } from "./adapters/types.js";
 import type { TransportClient, TransportServer } from "./transport/types.js";
 import { CodexAdapter } from "./adapters/codex.js";
@@ -23,7 +23,9 @@ import { log } from "./utils/logger.js";
 export interface BridgeOptions {
   agent: "codex" | "claude" | "auto";
   port: number;
+  host?: string;
   workDir: string;
+  tunnel?: boolean;
   relay?: boolean;
   relayUrl?: string;
 }
@@ -46,6 +48,7 @@ export class Bridge {
   private transport: TransportServer;
   private sessions = new Map<string, SessionInfo>();
   private options: BridgeOptions;
+  private tunnelStop: (() => void) | null = null;
 
   constructor(options: BridgeOptions) {
     this.options = options;
@@ -55,7 +58,7 @@ export class Bridge {
       // Will be set in start() after dynamic import
       this.transport = null as unknown as TransportServer;
     } else {
-      this.transport = new LocalTransport(options.port);
+      this.transport = new LocalTransport(options.port, options.host ?? "0.0.0.0");
     }
   }
 
@@ -77,14 +80,36 @@ export class Bridge {
     log.success(`WebSocket server listening on ${url}`);
 
     // 3. Display QR code
-    log.info("Scan this QR code with your phone to connect:");
-    displayQRCode(pairingData);
-    log.info(`Or connect manually: ${url}`);
-    if (pairingData.token) {
-      log.info(`Token: ${pairingData.token}`);
-    }
-    if (httpUrl && pairingData.host) {
-      log.info(`Open test client: ${httpUrl}?host=${pairingData.host}&port=${pairingData.port}&token=${pairingData.token ?? ""}&bridge_pubkey=${encodeURIComponent(String(pairingData.bridge_pubkey ?? ""))}&otp=${pairingData.otp ?? ""}`);
+    if (this.options.tunnel) {
+      // Launch Cloudflare Tunnel and use tunnel URL in QR code
+      log.info("Starting Cloudflare Tunnel...");
+      const { startTunnel } = await import("./utils/tunnel.js");
+      const tunnel = await startTunnel(this.options.port);
+      this.tunnelStop = tunnel.stop;
+      log.success(`Tunnel URL: ${tunnel.url}`);
+
+      // Override pairing data with tunnel info
+      // Extract just the hostname from the tunnel URL for the host field
+      const tunnelHostname = tunnel.url.replace("https://", "");
+      const tunnelPairingData = {
+        ...pairingData,
+        host: tunnelHostname,
+        port: 443,
+        tunnel: true,         // signal to the phone to use wss://
+      };
+      log.info("Scan this QR code with your phone to connect:");
+      displayQRCode(tunnelPairingData);
+      log.info(`Or connect manually: ${tunnel.wsUrl}`);
+    } else {
+      log.info("Scan this QR code with your phone to connect:");
+      displayQRCode(pairingData);
+      log.info(`Or connect manually: ${url}`);
+      if (pairingData.token) {
+        log.info(`Token: ${pairingData.token}`);
+      }
+      if (httpUrl && pairingData.host) {
+        log.info(`Open test client: ${httpUrl}?host=${pairingData.host}&port=${pairingData.port}&token=${pairingData.token ?? ""}&bridge_pubkey=${encodeURIComponent(String(pairingData.bridge_pubkey ?? ""))}&otp=${pairingData.otp ?? ""}`);
+      }
     }
 
     // 4. Wire up event handlers
@@ -112,6 +137,7 @@ export class Bridge {
     const shutdown = async () => {
       log.info("Shutting down...");
       this.adapter?.dispose();
+      this.tunnelStop?.();
       await this.transport.stop();
       process.exit(0);
     };
@@ -127,7 +153,7 @@ export class Bridge {
   ): Promise<void> {
     switch (message.type) {
       case "command":
-        await this.handleCommand(client, message.text, message.sessionId);
+        await this.handleCommand(client, message.text, message.sessionId, message.config);
         break;
 
       case "cancel":
@@ -164,6 +190,7 @@ export class Bridge {
     client: TransportClient,
     text: string,
     sessionId?: string,
+    config?: SessionConfig,
   ): Promise<void> {
     if (!this.adapter) {
       client.send({ type: "error", message: "No agent adapter available" });
@@ -173,7 +200,12 @@ export class Bridge {
     // Start or find session
     let sid = sessionId;
     if (!sid || !this.sessions.has(sid)) {
-      const opts: SessionOptions = { workDir: this.options.workDir };
+      const opts: SessionOptions = {
+        workDir: this.options.workDir,
+        model: config?.model,
+        approvalPolicy: config?.approvalPolicy,
+        sandboxMode: config?.sandboxMode,
+      };
       const session = await this.adapter.startSession(opts);
       sid = session.id;
       this.sessions.set(sid, session);
@@ -205,8 +237,14 @@ export class Bridge {
 
       // Update session state
       const session = this.sessions.get(sid!);
-      if (session && "state" in event) {
-        session.state = event.state;
+      if (session) {
+        if ("state" in event) {
+          session.state = event.state;
+        } else if (event.type === "turn_completed") {
+          session.state = "idle";
+        } else if (event.type === "error") {
+          session.state = "error";
+        }
         session.lastActiveAt = Date.now();
       }
 

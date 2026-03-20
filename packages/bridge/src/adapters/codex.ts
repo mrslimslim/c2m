@@ -29,8 +29,8 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model ?? "gpt-5.4",
       workingDirectory: opts.workDir,
       skipGitRepoCheck: true,
-      sandboxMode: "workspace-write",
-      approvalPolicy: "on-request",
+      sandboxMode: (opts.sandboxMode as "read-only" | "workspace-write" | "danger-full-access") ?? "workspace-write",
+      approvalPolicy: (opts.approvalPolicy as "never" | "on-request" | "on-failure" | "untrusted") ?? "on-request",
     });
 
     // Thread ID is null until first turn; we'll use a temp ID

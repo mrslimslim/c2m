@@ -84,6 +84,7 @@ export class LocalTransport implements TransportServer {
   private clients = new Map<string, ConnectedClient>();
   private token: string;
   private port: number;
+  private host: string;
 
   // E2E encryption keypair
   private keyPair: ReturnType<typeof generateKeyPair>;
@@ -95,8 +96,9 @@ export class LocalTransport implements TransportServer {
   private connectHandlers: Array<(client: TransportClient) => void> = [];
   private disconnectHandlers: Array<(client: TransportClient) => void> = [];
 
-  constructor(port: number = DEFAULT_PORT) {
+  constructor(port: number = DEFAULT_PORT, host: string = "0.0.0.0") {
     this.port = port;
+    this.host = host;
     this.token = randomBytes(16).toString("hex");
     this.keyPair = generateKeyPair();
     this.otp = randomBytes(3).toString("hex"); // 6-char hex OTP
@@ -143,10 +145,12 @@ export class LocalTransport implements TransportServer {
       // Create WebSocket server attached to HTTP server
       this.wss = new WebSocketServer({ server: this.httpServer });
 
-      this.httpServer.listen(this.port, "0.0.0.0", () => {
-        const localIp = this.getLocalIp();
-        const url = `ws://${localIp}:${this.port}`;
-        const httpUrl = `http://${localIp}:${this.port}`;
+      this.httpServer.listen(this.port, this.host, () => {
+        const isIPv6 = this.host.includes(":");
+        const localIp = this.getLocalIp(isIPv6);
+        const hostForUrl = localIp.includes(":") ? `[${localIp}]` : localIp;
+        const url = `ws://${hostForUrl}:${this.port}`;
+        const httpUrl = `http://${hostForUrl}:${this.port}`;
         const pairingData = {
           host: localIp,
           port: this.port,
@@ -369,8 +373,23 @@ export class LocalTransport implements TransportServer {
     return JSON.stringify(message);
   }
 
-  private getLocalIp(): string {
+  private getLocalIp(preferIPv6: boolean = false): string {
     const interfaces = networkInterfaces();
+    // If preferring IPv6, look for global unicast address first
+    if (preferIPv6) {
+      for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name] ?? []) {
+          if (
+            iface.family === "IPv6" &&
+            !iface.internal &&
+            !iface.address.startsWith("fe80")  // skip link-local
+          ) {
+            return iface.address;
+          }
+        }
+      }
+    }
+    // Fallback to IPv4
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name] ?? []) {
         if (iface.family === "IPv4" && !iface.internal) {
@@ -378,6 +397,6 @@ export class LocalTransport implements TransportServer {
         }
       }
     }
-    return "127.0.0.1";
+    return preferIPv6 ? "::1" : "127.0.0.1";
   }
 }

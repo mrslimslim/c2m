@@ -1,0 +1,24 @@
+{
+  "x25519": {
+    "privateKeyRawBase64": "iJRaKUn5VsBbQNACTLwnsJUkQQVZTKKkBvZ/uxOdh2I=",
+    "expectedPublicKeyBase64": "Xym9R4nnfuorSHRob+qQPVdSX3Jw6WyrHS+95N56gWw="
+  },
+  "hkdf": {
+    "myPrivateKeyRawBase64": "GIbdlwn7eZ9KPS0MdHPWYfzYPIjVUZfaDVfbYCDVLVA=",
+    "theirPublicKeyBase64": "Xym9R4nnfuorSHRob+qQPVdSX3Jw6WyrHS+95N56gWw=",
+    "otp": "246810",
+    "expectedSessionKeyBase64": "KC7D5FpzbnbJmRCIy8irc5viobytEUXvsWZr9dKS1IY="
+  },
+  "aesGcm": {
+    "sessionKeyBase64": "KC7D5FpzbnbJmRCIy8irc5viobytEUXvsWZr9dKS1IY=",
+    "nonceBase64": "ABEiM0RVZneImaq7",
+    "ciphertextBase64": "BmElVKFQLjKNtonGM81M8blFrivb20kMNLlehUYGGQ==",
+    "tagBase64": "SDdx6/MlJGtwvRcOYMZENg==",
+    "plaintext": "{\"type\":\"ping\",\"ts\":1700000000}"
+  },
+  "wireRoundTrip": {
+    "nonceBase64": "ABEiM0RVZneImaq7",
+    "ciphertextBase64": "BmElVKFQLjKNtonGM81M8blFrivb20kMNLlehUYGGQ==",
+    "tagBase64": "SDdx6/MlJGtwvRcOYMZENg=="
+  }
+}

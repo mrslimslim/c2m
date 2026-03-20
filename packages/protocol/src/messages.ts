@@ -20,6 +20,14 @@ export interface HandshakeOkMessage {
   clientId?: string;
 }
 
+// ─── Session Configuration ──────────────────────────────────────────
+
+export interface SessionConfig {
+  model?: string;
+  approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted";
+  sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+}
+
 // ─── Phone → Bridge ──────────────────────────────────────────────────
 
 export interface CommandMessage {
@@ -28,6 +36,8 @@ export interface CommandMessage {
   text: string;
   /** Target session, or empty to start a new session */
   sessionId?: string;
+  /** Optional session configuration (model, approval, sandbox) */
+  config?: SessionConfig;
 }
 
 export interface CancelMessage {

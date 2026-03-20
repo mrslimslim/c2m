@@ -1,0 +1,855 @@
+import SwiftUI
+import CodePilotCore
+import CodePilotFeatures
+import CodePilotProtocol
+
+struct RootView: View {
+    @StateObject private var appModel: AppModel
+
+    @MainActor
+    init() {
+        _appModel = StateObject(wrappedValue: AppModel())
+    }
+
+    @MainActor
+    init(appModel: AppModel) {
+        _appModel = StateObject(wrappedValue: appModel)
+    }
+
+    var body: some View {
+        ProjectsView()
+            .environmentObject(appModel)
+    }
+}
+
+// MARK: - ConnectionSlot
+
+private struct ConnectionSlot {
+    let savedConnectionID: String
+    let config: ConnectionConfig
+    let controller: BridgeConnectionController
+    let router: SessionMessageRouter
+    var summary: String = "Disconnected"
+}
+
+// MARK: - AppModel
+
+@MainActor
+final class AppModel: ObservableObject {
+    @Published private(set) var sessions: [SessionInfo] = []
+    @Published private(set) var activeSessionID: String?
+    @Published private(set) var diagnosticsRedactedLines: [String] = []
+    @Published private(set) var latestLatencyMs: Int?
+    @Published private(set) var transportTimeline: [TimelineItem] = []
+    @Published private(set) var savedConnections: [SavedConnection] = []
+    @Published private(set) var selectedSavedConnectionID: String?
+    @Published private(set) var currentConnectionSummary: String = "Disconnected"
+    @Published private(set) var slotStates: [String: String] = [:]
+    @Published var latestErrorMessage: String?
+
+    private let sessionStore: SessionStore
+    private let timelineStore: TimelineStore
+    private let fileStore: FileStore
+    private let diagnosticsStore: DiagnosticsStore
+    private let diagnosticsViewModel: DiagnosticsViewModel
+    private let savedConnectionStore: SavedConnectionStore
+    private let connectionsViewModel: ConnectionsViewModel
+    private let persistsSavedConnections: Bool
+
+    // Multi-connection slots
+    private var slots: [String: ConnectionSlot] = [:]
+    private var sessionToSlotID: [String: String] = [:]
+    private var pingTimer: Timer?
+
+    // Fallback stub sender for preview / offline use
+    private var stubSender: InMemoryPhoneMessageSender?
+
+    convenience init() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnosticsStore = DiagnosticsStore()
+        let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
+        let savedConnectionStore = SavedConnectionStore()
+        let stubSender = InMemoryPhoneMessageSender()
+        let restoredSnapshot = savedConnectionStore.loadSnapshot()
+        let initialSnapshot: SavedConnectionsSnapshot
+        if restoredSnapshot.connections.isEmpty {
+            initialSnapshot = .init(
+                connections: Self.defaultSavedConnections(),
+                selectedConnectionID: nil
+            )
+        } else {
+            initialSnapshot = restoredSnapshot
+        }
+        let connectionsViewModel = ConnectionsViewModel(savedConnections: initialSnapshot.connections)
+        _ = connectionsViewModel.selectSavedConnection(id: initialSnapshot.selectedConnectionID)
+
+        self.init(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnosticsStore: diagnosticsStore,
+            diagnosticsViewModel: diagnosticsViewModel,
+            savedConnectionStore: savedConnectionStore,
+            stubSender: stubSender,
+            connectionsViewModel: connectionsViewModel,
+            currentConnectionSummary: "Disconnected",
+            latestErrorMessage: nil,
+            persistsSavedConnections: true
+        )
+
+        if restoredSnapshot.connections.isEmpty {
+            do {
+                try savedConnectionStore.saveSnapshot(
+                    .init(
+                        connections: initialSnapshot.connections,
+                        selectedConnectionID: connectionsViewModel.selectedSavedConnectionID
+                    )
+                )
+            } catch {
+                diagnosticsStore.recordError("save defaults failed: \(error.localizedDescription)")
+                refreshPublishedState()
+            }
+        }
+    }
+
+    private init(
+        sessionStore: SessionStore,
+        timelineStore: TimelineStore,
+        fileStore: FileStore,
+        diagnosticsStore: DiagnosticsStore,
+        diagnosticsViewModel: DiagnosticsViewModel,
+        savedConnectionStore: SavedConnectionStore,
+        stubSender: InMemoryPhoneMessageSender?,
+        connectionsViewModel: ConnectionsViewModel,
+        currentConnectionSummary: String,
+        latestErrorMessage: String?,
+        persistsSavedConnections: Bool
+    ) {
+        self.sessionStore = sessionStore
+        self.timelineStore = timelineStore
+        self.fileStore = fileStore
+        self.diagnosticsStore = diagnosticsStore
+        self.diagnosticsViewModel = diagnosticsViewModel
+        self.savedConnectionStore = savedConnectionStore
+        self.stubSender = stubSender
+        self.connectionsViewModel = connectionsViewModel
+        self.currentConnectionSummary = currentConnectionSummary
+        self.latestErrorMessage = latestErrorMessage
+        self.persistsSavedConnections = persistsSavedConnections
+
+        refreshPublishedState()
+    }
+
+    // MARK: - Connection Management (public API)
+
+    func parseConnectionPayload(_ payload: String) throws -> ConnectionConfig {
+        try connectionsViewModel.parsePayload(payload)
+    }
+
+    @discardableResult
+    func selectSavedConnection(id: String?) -> ConnectionConfig? {
+        let selected = connectionsViewModel.selectSavedConnection(id: id)
+        persistSavedConnections()
+        latestErrorMessage = nil
+        refreshPublishedState()
+        return selected
+    }
+
+    /// Connect a saved connection by its ID. Creates a new slot if needed.
+    func connectSavedConnection(id: String) {
+        guard let saved = connectionsViewModel.savedConnections.first(where: { $0.id == id }) else {
+            latestErrorMessage = "Connection not found."
+            refreshPublishedState()
+            return
+        }
+
+        // Disconnect existing slot if any
+        disconnectSavedConnection(id: id)
+
+        let config = saved.config
+        let socketURL = socketURLString(for: config)
+        guard let url = URL(string: socketURL) else {
+            latestErrorMessage = "Invalid connection URL."
+            diagnosticsStore.recordError("invalid URL: \(socketURL)")
+            refreshPublishedState()
+            return
+        }
+
+        diagnosticsStore.recordInfo("[\(saved.name)] connecting: \(socketURL)")
+        diagnosticsStore.recordInfo("[\(saved.name)] bridge_pubkey: \(config.bridgePublicKey.prefix(12))...")
+        diagnosticsStore.recordInfo("[\(saved.name)] otp: \(config.otp)")
+        timelineStore.appendSystem("connecting: \(socketURL)", sessionId: nil)
+        latestErrorMessage = nil
+
+        // Create transport & controller
+        let transport = NWBridgeTransport(url: url)
+        let controller = BridgeConnectionController(
+            config: config,
+            transport: transport,
+            diagnostics: diagnosticsStore
+        )
+
+        // Create message router (shared stores)
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnosticsStore
+        )
+
+        var slot = ConnectionSlot(
+            savedConnectionID: id,
+            config: config,
+            controller: controller,
+            router: router,
+            summary: "Connecting..."
+        )
+
+        let slotID = id
+
+        // Wire up callbacks
+        controller.onStateChange = { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.handleSlotStateChange(slotID: slotID, state: state)
+            }
+        }
+
+        controller.onBridgeMessage = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.handleSlotBridgeMessage(slotID: slotID, message: message)
+            }
+        }
+
+        // Connect
+        do {
+            try controller.connect()
+            diagnosticsStore.recordInfo("[\(saved.name)] connect() returned successfully")
+        } catch {
+            diagnosticsStore.recordError("[\(saved.name)] connect() threw: \(error)")
+            latestErrorMessage = "Connection failed: \(error.localizedDescription)"
+            slot.summary = "Disconnected"
+        }
+
+        slots[id] = slot
+        ensurePingTimer()
+        refreshPublishedState()
+    }
+
+    /// Legacy connect API — finds or creates a saved connection, then connects it.
+    func connect(using config: ConnectionConfig) {
+        // Find matching saved connection or use selected
+        if let selectedID = connectionsViewModel.selectedSavedConnectionID {
+            connectSavedConnection(id: selectedID)
+        } else if let first = connectionsViewModel.savedConnections.first {
+            connectSavedConnection(id: first.id)
+        }
+    }
+
+    /// Add a new saved connection and immediately connect it.
+    func addAndConnectSavedConnection(id: String, name: String, config: ConnectionConfig) {
+        let newConnection = SavedConnection(id: id, name: name, config: config)
+        var connections = connectionsViewModel.savedConnections
+        connections.append(newConnection)
+        connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: id)
+        persistSavedConnections()
+        refreshPublishedState()
+        connectSavedConnection(id: id)
+    }
+
+    func disconnectSavedConnection(id: String) {
+        guard let slot = slots.removeValue(forKey: id) else { return }
+        slot.controller.disconnect()
+        // Remove session→slot mappings for this slot
+        sessionToSlotID = sessionToSlotID.filter { $0.value != id }
+        if slots.isEmpty {
+            stopPingTimer()
+        }
+        refreshPublishedState()
+    }
+
+    func disconnectAll() {
+        for (id, slot) in slots {
+            slot.controller.disconnect()
+            slots.removeValue(forKey: id)
+        }
+        sessionToSlotID.removeAll()
+        stopPingTimer()
+        refreshPublishedState()
+    }
+
+    func disconnect() {
+        disconnectAll()
+    }
+
+    func isSlotConnected(_ savedConnectionID: String) -> Bool {
+        guard let slot = slots[savedConnectionID] else { return false }
+        if case .connected = slot.controller.state { return true }
+        return false
+    }
+
+    func slotSummary(for savedConnectionID: String) -> String {
+        slots[savedConnectionID]?.summary ?? "Disconnected"
+    }
+
+    /// Returns IDs of all currently connected slots.
+    var connectedSlotIDs: [String] {
+        slots.compactMap { id, slot in
+            if case .connected = slot.controller.state { return id }
+            return nil
+        }
+    }
+
+    // MARK: - Session Management
+
+    func refreshSessions() {
+        // Send list_sessions to all connected slots
+        var anySuccess = false
+        for (_, slot) in slots {
+            if case .connected = slot.controller.state {
+                do {
+                    try slot.controller.send(.listSessions)
+                    anySuccess = true
+                } catch {
+                    diagnosticsStore.recordError("refresh sessions failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        if !anySuccess && !slots.isEmpty {
+            latestErrorMessage = "Unable to refresh sessions."
+        } else {
+            latestErrorMessage = nil
+        }
+        refreshPublishedState()
+    }
+
+    /// Refresh sessions for a specific connection.
+    func refreshSessionsForConnection(_ connectionID: String) {
+        guard let slot = slots[connectionID], case .connected = slot.controller.state else {
+            return
+        }
+        do {
+            try slot.controller.send(.listSessions)
+        } catch {
+            diagnosticsStore.recordError("[\(connectionID)] refresh sessions failed: \(error.localizedDescription)")
+        }
+        refreshPublishedState()
+    }
+
+    /// Return sessions that belong to a specific connection.
+    func sessionsForConnection(_ connectionID: String) -> [SessionInfo] {
+        sessions.filter { session in
+            sessionToSlotID[session.id] == connectionID
+        }
+    }
+
+    /// Find an existing saved connection that matches the given config.
+    func findExistingSavedConnectionID(for config: ConnectionConfig) -> String? {
+        for saved in savedConnections {
+            switch (saved.config, config) {
+            case let (.lan(h1, p1, _, _, _), .lan(h2, p2, _, _, _)):
+                if h1 == h2 && p1 == p2 { return saved.id }
+            case let (.relay(u1, c1, _, _), .relay(u2, c2, _, _)):
+                if u1 == u2 && c1 == c2 { return saved.id }
+            default:
+                break
+            }
+        }
+        return nil
+    }
+
+    /// Delete saved connections at given offsets.
+    func deleteSavedConnections(at offsets: IndexSet) {
+        var connections = connectionsViewModel.savedConnections
+        for offset in offsets {
+            let id = connections[offset].id
+            disconnectSavedConnection(id: id)
+        }
+        connections.remove(atOffsets: offsets)
+        connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: connectionsViewModel.selectedSavedConnectionID)
+        persistSavedConnections()
+        refreshPublishedState()
+    }
+
+    func deleteSavedConnection(id: String) {
+        disconnectSavedConnection(id: id)
+        var connections = connectionsViewModel.savedConnections
+        connections.removeAll { $0.id == id }
+        connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: connectionsViewModel.selectedSavedConnectionID)
+        persistSavedConnections()
+        refreshPublishedState()
+    }
+
+    func selectSession(id: String?) {
+        sessionStore.setActiveSession(id: id)
+        refreshPublishedState()
+    }
+
+    func session(for sessionID: String) -> SessionInfo? {
+        sessions.first(where: { $0.id == sessionID })
+    }
+
+    /// Send a command without a sessionId — Bridge will create a new session.
+    func sendNewSessionCommand(_ text: String, connectionID: String? = nil, config: SessionConfig? = nil) throws {
+        let targetID = connectionID ?? connectedSlotIDs.first
+        guard let slotID = targetID, let slot = slots[slotID] else {
+            throw AppModelError.noActiveConnection
+        }
+        let wireConfig = config?.isEmpty == true ? nil : config
+        try slot.controller.send(.command(text: text, sessionId: nil, config: wireConfig))
+        diagnosticsStore.recordInfo("new session command sent to \(slotID): \(text.prefix(40))")
+        refreshPublishedState()
+    }
+
+    func timeline(for sessionID: String) -> [TimelineItem] {
+        timelineStore.timeline(for: sessionID)
+    }
+
+    func files(for sessionID: String) -> [FileState] {
+        fileStore.files(for: sessionID)
+    }
+
+    func makeSessionDetailViewModel(sessionID: String) -> SessionDetailViewModel {
+        // Find the controller for this session's connection
+        let sender: PhoneMessageSending
+        if let slotID = sessionToSlotID[sessionID], let slot = slots[slotID] {
+            sender = slot.controller
+        } else if let firstConnected = slots.values.first(where: {
+            if case .connected = $0.controller.state { return true }
+            return false
+        }) {
+            sender = firstConnected.controller
+        } else {
+            sender = stubSender ?? InMemoryPhoneMessageSender()
+        }
+
+        return .init(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            sessionId: sessionID
+        )
+    }
+
+    func refreshPublishedState() {
+        sessions = sessionStore.sessions
+        activeSessionID = sessionStore.activeSessionId
+        diagnosticsViewModel.refresh()
+        diagnosticsRedactedLines = diagnosticsViewModel.redactedLines
+        latestLatencyMs = diagnosticsViewModel.latestLatencyMs
+        transportTimeline = timelineStore.transportTimeline
+        savedConnections = connectionsViewModel.savedConnections
+        selectedSavedConnectionID = connectionsViewModel.selectedSavedConnectionID
+
+        // Aggregate connection summaries
+        var states: [String: String] = [:]
+        for saved in connectionsViewModel.savedConnections {
+            states[saved.id] = slots[saved.id]?.summary ?? "Disconnected"
+        }
+        slotStates = states
+
+        // Aggregate overall summary
+        let totalSlots = slots.count
+        let connectedCount = slots.values.filter {
+            if case .connected = $0.controller.state { return true }
+            return false
+        }.count
+
+        if totalSlots == 0 {
+            currentConnectionSummary = "Disconnected"
+        } else if connectedCount == totalSlots {
+            currentConnectionSummary = connectedCount == 1
+                ? (slots.values.first?.summary ?? "Connected")
+                : "All connected (\(connectedCount))"
+        } else if connectedCount > 0 {
+            currentConnectionSummary = "\(connectedCount)/\(totalSlots) connected"
+        } else {
+            // Some slots exist but none connected
+            let hasConnecting = slots.values.contains {
+                if case .connecting = $0.controller.state { return true }
+                if case .reconnecting = $0.controller.state { return true }
+                return false
+            }
+            currentConnectionSummary = hasConnecting ? "Connecting..." : "Disconnected"
+        }
+    }
+
+    // MARK: - Slot State Handling
+
+    private func handleSlotStateChange(slotID: String, state: ConnectionState) {
+        guard slots[slotID] != nil else { return }
+
+        diagnosticsStore.recordInfo("[\(slotID)] state → \(state)")
+
+        switch state {
+        case .disconnected:
+            slots[slotID]?.summary = "Disconnected"
+        case .connecting:
+            slots[slotID]?.summary = "Connecting..."
+        case .reconnecting:
+            slots[slotID]?.summary = "Reconnecting..."
+        case let .connected(encrypted, clientId):
+            let mode = encrypted ? "encrypted" : "plaintext"
+            slots[slotID]?.summary = "Connected (\(mode))"
+            diagnosticsStore.recordInfo("[\(slotID)] connected clientId=\(clientId ?? "nil") encrypted=\(encrypted)")
+            // Auto-request session list
+            if let slot = slots[slotID] {
+                do {
+                    try slot.controller.send(.listSessions)
+                } catch {
+                    diagnosticsStore.recordError("[\(slotID)] list_sessions failed: \(error)")
+                }
+            }
+        case let .failed(reason):
+            slots[slotID]?.summary = "Failed: \(reason)"
+            latestErrorMessage = reason
+        }
+        refreshPublishedState()
+    }
+
+    private func handleSlotBridgeMessage(slotID: String, message: BridgeMessage) {
+        guard let slot = slots[slotID] else { return }
+
+        // Track session→slot mapping from session_list messages
+        if case let .sessionList(sessions) = message {
+            for session in sessions {
+                sessionToSlotID[session.id] = slotID
+            }
+        }
+
+        slot.router.handle(message)
+        refreshPublishedState()
+    }
+
+    // MARK: - Ping Keep-alive
+
+    private func ensurePingTimer() {
+        guard pingTimer == nil else { return }
+        startPingTimer()
+    }
+
+    private func startPingTimer() {
+        stopPingTimer()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.sendPingToAllSlots()
+            }
+        }
+    }
+
+    private func stopPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+    }
+
+    private func sendPingToAllSlots() {
+        let ts = Int(Date().timeIntervalSince1970 * 1000)
+        for (id, slot) in slots {
+            if case .connected = slot.controller.state {
+                do {
+                    try slot.controller.send(.ping(ts: ts))
+                } catch {
+                    diagnosticsStore.recordError("[\(id)] ping failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        refreshPublishedState()
+    }
+
+    // MARK: - Persistence
+
+    private func persistSavedConnections() {
+        guard persistsSavedConnections else { return }
+
+        do {
+            try savedConnectionStore.saveSnapshot(
+                .init(
+                    connections: connectionsViewModel.savedConnections,
+                    selectedConnectionID: connectionsViewModel.selectedSavedConnectionID
+                )
+            )
+        } catch {
+            diagnosticsStore.recordError("save connections failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func socketURLString(for config: ConnectionConfig) -> String {
+        switch config {
+        case let .lan(host, port, _, _, _):
+            // Tunnel URL: host is a plain hostname, use wss://
+            if host.hasSuffix(".trycloudflare.com") || host.hasSuffix(".cloudflare.com") {
+                return "wss://\(host)"
+            }
+            // Already a full URL (e.g. wss://... or ws://...)
+            if host.hasPrefix("wss://") || host.hasPrefix("ws://") {
+                return host
+            }
+            // IPv6 addresses must be wrapped in brackets for URLs
+            if host.contains(":") {
+                return "ws://[\(host)]:\(port)"
+            }
+            return "ws://\(host):\(port)"
+        case let .relay(url, channel, _, _):
+            let relayBase = url.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(
+                of: "/+$",
+                with: "",
+                options: .regularExpression
+            )
+            let encodedChannel = channel.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? channel
+            return "\(relayBase)/ws?device=phone&channel=\(encodedChannel)"
+        }
+    }
+
+    private static func defaultSavedConnections() -> [SavedConnection] {
+        [
+            .init(
+                id: "local-lan",
+                name: "Local LAN",
+                config: .lan(
+                    host: "127.0.0.1",
+                    port: 19260,
+                    token: "",
+                    bridgePublicKey: "bridge-pubkey",
+                    otp: "123456"
+                )
+            ),
+            .init(
+                id: "team-relay",
+                name: "Team Relay",
+                config: .relay(
+                    url: "wss://relay.example.com",
+                    channel: "team-alpha",
+                    bridgePublicKey: "bridge-pubkey",
+                    otp: "654321"
+                )
+            ),
+        ]
+    }
+}
+
+// MARK: - Errors
+
+enum AppModelError: Error, LocalizedError {
+    case noActiveConnection
+
+    var errorDescription: String? {
+        switch self {
+        case .noActiveConnection: return "No active connection available."
+        }
+    }
+}
+
+// MARK: - Stub Sender
+
+private final class InMemoryPhoneMessageSender: PhoneMessageSending {
+    var onSend: ((PhoneMessage) -> Void)?
+
+    func send(_ message: PhoneMessage) throws {
+        onSend?(message)
+    }
+}
+
+// MARK: - Preview
+
+#if DEBUG
+extension AppModel {
+    static func previewFixture() -> AppModel {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnosticsStore = DiagnosticsStore()
+        let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
+        let previewDefaults = UserDefaults(suiteName: "AppModelPreview.\(UUID().uuidString)") ?? .standard
+        let previewSecretStore = KeychainSecretStore(service: "com.codepilot.preview.\(UUID().uuidString)")
+        let savedConnectionStore = SavedConnectionStore(
+            userDefaults: previewDefaults,
+            secretStore: previewSecretStore
+        )
+        let connectionsViewModel = ConnectionsViewModel(savedConnections: AppPreviewFixtures.savedConnections.connections)
+        _ = connectionsViewModel.selectSavedConnection(id: AppPreviewFixtures.savedConnections.selectedConnectionID)
+
+        _ = sessionStore.applySessionList(AppPreviewFixtures.sessions)
+        sessionStore.setActiveSession(id: AppPreviewFixtures.primarySessionID)
+        AppPreviewFixtures.seedTimeline(into: timelineStore)
+        AppPreviewFixtures.seedFiles(into: fileStore, sessionID: AppPreviewFixtures.primarySessionID)
+        AppPreviewFixtures.seedDiagnostics(into: diagnosticsStore)
+
+        let model = AppModel(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnosticsStore: diagnosticsStore,
+            diagnosticsViewModel: diagnosticsViewModel,
+            savedConnectionStore: savedConnectionStore,
+            stubSender: InMemoryPhoneMessageSender(),
+            connectionsViewModel: connectionsViewModel,
+            currentConnectionSummary: AppPreviewFixtures.currentConnectionSummary,
+            latestErrorMessage: nil,
+            persistsSavedConnections: false
+        )
+        // Seed session→connection mapping and slot states for preview
+        model.seedPreviewMappings(
+            sessionToSlot: [
+                AppPreviewFixtures.primarySessionID: "preview-lan",
+                "session-preview-secondary": "preview-relay",
+            ],
+            slotStates: [
+                "preview-lan": "Connected (encrypted)",
+                "preview-relay": "Connected (encrypted)",
+            ]
+        )
+        return model
+    }
+
+    /// Seeds session→connection mapping and slot states for previews.
+    func seedPreviewMappings(sessionToSlot: [String: String], slotStates: [String: String]) {
+        for (sessionID, slotID) in sessionToSlot {
+            sessionToSlotID[sessionID] = slotID
+        }
+        self.slotStates = slotStates
+    }
+}
+
+enum AppPreviewFixtures {
+    static let primarySessionID = "session-preview-primary"
+
+    static let savedConnections = SavedConnectionsSnapshot(
+        connections: [
+            .init(
+                id: "preview-lan",
+                name: "Preview LAN",
+                config: .lan(
+                    host: "192.168.1.24",
+                    port: 19260,
+                    token: "preview-token",
+                    bridgePublicKey: "preview-bridge-pubkey",
+                    otp: "246810"
+                )
+            ),
+            .init(
+                id: "preview-relay",
+                name: "Preview Relay",
+                config: .relay(
+                    url: "wss://relay.example.com",
+                    channel: "design-review",
+                    bridgePublicKey: "preview-relay-pubkey",
+                    otp: "135790"
+                )
+            ),
+        ],
+        selectedConnectionID: "preview-relay"
+    )
+
+    static let sessions: [SessionInfo] = [
+        .init(
+            id: primarySessionID,
+            agentType: .codex,
+            workDir: "/Users/tengyu/Development/c2m",
+            state: .coding,
+            createdAt: 1_742_281_200_000,
+            lastActiveAt: 1_742_281_560_000
+        ),
+        .init(
+            id: "session-preview-secondary",
+            agentType: .claude,
+            workDir: "/Users/tengyu/Development/c2m/packages/ios",
+            state: .thinking,
+            createdAt: 1_742_280_900_000,
+            lastActiveAt: 1_742_281_000_000
+        ),
+    ]
+
+    static let previewFile = FileState(
+        path: "/Users/tengyu/Development/c2m/README.md",
+        content: "# CodePilot iOS Preview\n\nThis file is shown inside the SwiftUI Canvas preview.",
+        language: "markdown",
+        isLoading: false
+    )
+
+    static let currentConnectionSummary = "Connected: wss://relay.example.com/ws?device=phone&channel=design-review"
+
+    static func seedTimeline(into timelineStore: TimelineStore) {
+        timelineStore.appendSystem(
+            "relay authenticated token=preview-token otp=135790",
+            sessionId: nil,
+            timestamp: 1_742_281_100_000
+        )
+        timelineStore.appendTransportError(
+            "reconnect triggered ciphertext=PREVIEW-CIPHERTEXT",
+            timestamp: 1_742_281_110_000
+        )
+        timelineStore.appendUserCommand(
+            "Add SwiftUI previews for the main iOS screens",
+            sessionId: primarySessionID,
+            timestamp: 1_742_281_200_000
+        )
+        timelineStore.appendBridgeEvent(
+            sessionId: primarySessionID,
+            event: .status(state: .runningCommand, message: "Generating preview fixtures"),
+            timestamp: 1_742_281_220_000
+        )
+        timelineStore.appendBridgeEvent(
+            sessionId: primarySessionID,
+            event: .thinking(text: "Reusing the existing AppModel environment keeps previews honest."),
+            timestamp: 1_742_281_240_000
+        )
+        timelineStore.appendBridgeEvent(
+            sessionId: primarySessionID,
+            event: .codeChange(
+                changes: [
+                    .init(path: "packages/ios/CodePilotApp/CodePilot/App/RootView.swift", kind: .update),
+                    .init(path: "packages/ios/CodePilotApp/CodePilot/Connections/ConnectionsView.swift", kind: .update),
+                ]
+            ),
+            timestamp: 1_742_281_280_000
+        )
+        timelineStore.appendBridgeEvent(
+            sessionId: primarySessionID,
+            event: .commandExec(
+                command: "xcodebuild -scheme CodePilot build",
+                output: "BUILD SUCCEEDED",
+                exitCode: 0,
+                status: .done
+            ),
+            timestamp: 1_742_281_340_000
+        )
+        timelineStore.appendBridgeEvent(
+            sessionId: primarySessionID,
+            event: .turnCompleted(
+                summary: "Added preview fixtures and page-level previews.",
+                filesChanged: [
+                    "packages/ios/CodePilotApp/CodePilot/App/RootView.swift",
+                    "packages/ios/CodePilotApp/CodePilot/Sessions/SessionDetailView.swift",
+                ],
+                usage: .init(inputTokens: 482, outputTokens: 176, cachedInputTokens: 64)
+            ),
+            timestamp: 1_742_281_420_000
+        )
+    }
+
+    static func seedFiles(into fileStore: FileStore, sessionID: String) {
+        fileStore.markRequested(path: previewFile.path, sessionId: sessionID)
+        fileStore.routeFileContent(
+            path: previewFile.path,
+            content: previewFile.content,
+            language: previewFile.language,
+            fallbackSessionId: sessionID
+        )
+    }
+
+    static func seedDiagnostics(into diagnosticsStore: DiagnosticsStore) {
+        diagnosticsStore.recordStateTransition(
+            from: .connected(encrypted: true, clientId: "preview-client"),
+            to: .reconnecting
+        )
+        diagnosticsStore.recordInfo("token=preview-token otp=135790 ciphertext=PREVIEW-CIPHERTEXT")
+        diagnosticsStore.recordInfo("pong:42ms")
+    }
+}
+
+#Preview("Root View") {
+    RootView(appModel: AppModel.previewFixture())
+}
+#endif
