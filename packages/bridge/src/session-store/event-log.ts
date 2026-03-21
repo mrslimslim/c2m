@@ -1,5 +1,5 @@
 import type { AgentEvent } from "@codepilot/protocol";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   defaultSessionEventLogPath,
@@ -93,20 +93,22 @@ export class SessionEventLogStore {
         const aliasRecords = aliasEntry ? await this.readLogRecords(aliasEntry.logPath) : [];
         const canonicalRecords = await this.readLogRecords(canonicalEntry.logPath);
 
-        const mergedRecords = [
-          ...aliasRecords,
-          ...canonicalRecords,
-        ].map((record, indexInMerged): PersistedSessionEvent => ({
-          ...record,
-          sessionId: finalCanonical,
-          eventId: indexInMerged + 1,
-        }));
-
-        if (mergedRecords.length > 0) {
-          await this.writeLogRecords(canonicalEntry.logPath, mergedRecords);
+        if (aliasRecords.length > 0 && canonicalRecords.length > 0) {
+          throw new Error(
+            "Cannot remap alias with existing history into canonical session with existing history",
+          );
         }
 
-        canonicalEntry.latestEventId = mergedRecords.length;
+        if (aliasRecords.length > 0 && canonicalRecords.length === 0) {
+          const migratedAliasRecords = aliasRecords.map((record): PersistedSessionEvent => ({
+            ...record,
+            sessionId: finalCanonical,
+          }));
+          await this.writeLogRecords(canonicalEntry.logPath, migratedAliasRecords);
+        }
+
+        const latestFromLog = await this.readLatestEventId(canonicalEntry.logPath);
+        canonicalEntry.latestEventId = Math.max(canonicalEntry.latestEventId, latestFromLog);
         canonicalEntry.aliasSessionIds = dedupe([
           ...canonicalEntry.aliasSessionIds,
           ...(aliasEntry?.aliasSessionIds ?? []),
@@ -185,8 +187,11 @@ export class SessionEventLogStore {
 
   private async saveIndexFile(index: SessionIndexFile): Promise<void> {
     const indexPath = await defaultSessionIndexPath(this.workDir, this.pathOptions);
-    await mkdir(dirname(indexPath), { recursive: true });
-    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf-8");
+    const indexDir = dirname(indexPath);
+    await mkdir(indexDir, { recursive: true });
+    const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(index, null, 2)}\n`, "utf-8");
+    await rename(tempPath, indexPath);
   }
 
   private async ensureSessionEntry(

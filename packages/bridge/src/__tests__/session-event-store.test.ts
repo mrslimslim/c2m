@@ -102,6 +102,32 @@ test("alias remaps persist and resolve to canonical session id", async () => {
   }
 });
 
+test("alias remap preserves alias history when canonical has no prior history", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "codepilot-home-"));
+  const workDir = await mkdtemp(join(tmpdir(), "codepilot-work-"));
+
+  try {
+    const store = new SessionEventLogStore({ workDir, homeDir });
+    await store.appendEvent({
+      sessionId: "temp-history",
+      timestamp: 2500,
+      event: { type: "status", state: "thinking", message: "alias-first" },
+    });
+
+    await store.remapSessionAlias("temp-history", "real-history");
+
+    const replay = await store.readEventsAfter("real-history", 0);
+    assert.deepEqual(replay.map((event) => event.eventId), [1]);
+    assert.deepEqual(
+      replay.map((event) => (event.event as { message: string }).message),
+      ["alias-first"],
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("latestEventId survives fresh store instances", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "codepilot-home-"));
   const workDir = await mkdtemp(join(tmpdir(), "codepilot-work-"));
@@ -247,7 +273,7 @@ test("replay tolerates a torn final JSONL line", async () => {
   }
 });
 
-test("alias remap preserves alias history when canonical log already exists", async () => {
+test("alias remap fails loudly when alias and canonical both have history", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "codepilot-home-"));
   const workDir = await mkdtemp(join(tmpdir(), "codepilot-work-"));
 
@@ -264,14 +290,10 @@ test("alias remap preserves alias history when canonical log already exists", as
       event: { type: "status", state: "thinking", message: "canonical-before-remap" },
     });
 
-    await store.remapSessionAlias("temp-alias", "real-canonical");
-    const replay = await store.readEventsAfter("real-canonical", 0);
-
-    assert.deepEqual(
-      replay.map((event) => (event.event as { message: string }).message),
-      ["alias-before-remap", "canonical-before-remap"],
+    await assert.rejects(
+      () => store.remapSessionAlias("temp-alias", "real-canonical"),
+      /Cannot remap alias with existing history into canonical session with existing history/,
     );
-    assert.deepEqual(replay.map((event) => event.eventId), [1, 2]);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(workDir, { recursive: true, force: true });
