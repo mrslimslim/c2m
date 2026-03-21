@@ -104,6 +104,51 @@ class MultiSessionAdapter implements AgentAdapter {
   dispose(): void {}
 }
 
+class RemapDuringExecuteAdapter implements AgentAdapter {
+  readonly name = "codex" as const;
+  sessionMap = new Map<string, SessionInfo>();
+
+  async startSession(opts: SessionOptions): Promise<SessionInfo> {
+    const session: SessionInfo = {
+      id: "temp-session-remap",
+      agentType: "codex",
+      workDir: opts.workDir,
+      state: "idle",
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+    };
+    this.sessionMap.set(session.id, session);
+    return session;
+  }
+
+  async execute(
+    sessionId: string,
+    _input: string,
+    onEvent: (event: AgentEvent) => void,
+  ): Promise<void> {
+    const session = this.sessionMap.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    onEvent({ type: "status", state: "thinking", message: "before remap" });
+
+    this.sessionMap.delete(session.id);
+    session.id = "real-session-remap";
+    this.sessionMap.set(session.id, session);
+
+    onEvent({ type: "status", state: "thinking", message: "after remap" });
+  }
+
+  async resumeSession(_sessionId: string): Promise<SessionInfo> {
+    throw new Error("not used");
+  }
+
+  cancel(): void {}
+
+  dispose(): void {}
+}
+
 test("Bridge keeps the new Codex thread ID and reuses it for follow-up commands", async () => {
   const transport = {
     broadcast: () => {},
@@ -189,4 +234,38 @@ test("Bridge emits eventId values that are monotonic within each session", async
 
   assert.deepEqual(bySession.get("session-1"), [1, 2]);
   assert.deepEqual(bySession.get("session-2"), [1, 2]);
+});
+
+test("Bridge preserves eventId continuity across temp-to-real session remaps", async () => {
+  const bridge = new Bridge({
+    agent: "codex",
+    port: 0,
+    workDir: process.cwd(),
+  });
+
+  const bridgeAny = bridge as unknown as {
+    transport: { broadcast: () => void };
+    adapter: AgentAdapter;
+    handleCommand: (client: { id: string; send: (message: unknown) => void }, text: string, sessionId?: string) => Promise<void>;
+  };
+
+  bridgeAny.transport = { broadcast: () => {} };
+  bridgeAny.adapter = new RemapDuringExecuteAdapter();
+
+  const sent: Array<Record<string, unknown>> = [];
+  const client = {
+    id: "client",
+    send: (message: unknown) => {
+      if (typeof message === "object" && message !== null) {
+        sent.push(message as Record<string, unknown>);
+      }
+    },
+  };
+
+  await bridgeAny.handleCommand(client, "command with remap");
+  await bridgeAny.handleCommand(client, "follow-up after remap", "real-session-remap");
+
+  const eventMessages = sent.filter((message) => message.type === "event");
+  const eventIds = eventMessages.map((message) => message.eventId);
+  assert.deepEqual(eventIds, [1, 2, 3, 4]);
 });

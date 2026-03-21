@@ -240,7 +240,9 @@ export class Bridge {
     const onEvent = (event: AgentEvent) => {
       const currentSession = this.sessions.get(sid!);
       if (currentSession && currentSession.id !== sid) {
+        const oldId = sid!;
         const newId = currentSession.id;
+        this.remapEventCounter(oldId, newId);
         this.sessions.delete(sid!);
         sid = newId;
         this.sessions.set(sid, currentSession);
@@ -296,6 +298,15 @@ export class Bridge {
     const id = (this.nextEventIdBySession.get(sessionId) ?? 0) + 1;
     this.nextEventIdBySession.set(sessionId, id);
     return id;
+  }
+
+  private remapEventCounter(oldSessionId: string, newSessionId: string): void {
+    if (oldSessionId === newSessionId) return;
+    const oldCounter = this.nextEventIdBySession.get(oldSessionId);
+    if (oldCounter === undefined) return;
+    const newCounter = this.nextEventIdBySession.get(newSessionId) ?? 0;
+    this.nextEventIdBySession.set(newSessionId, Math.max(oldCounter, newCounter));
+    this.nextEventIdBySession.delete(oldSessionId);
   }
 
   private async handleFileRequest(
