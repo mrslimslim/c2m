@@ -64,6 +64,46 @@ class FakeAdapter implements AgentAdapter {
   dispose(): void {}
 }
 
+class MultiSessionAdapter implements AgentAdapter {
+  readonly name = "codex" as const;
+  private counter = 0;
+  startedSessionIds: string[] = [];
+
+  async startSession(opts: SessionOptions): Promise<SessionInfo> {
+    this.counter += 1;
+    const id = `session-${this.counter}`;
+    this.startedSessionIds.push(id);
+    return {
+      id,
+      agentType: "codex",
+      workDir: opts.workDir,
+      state: "idle",
+      createdAt: Date.now(),
+      lastActiveAt: Date.now(),
+    };
+  }
+
+  async execute(
+    _sessionId: string,
+    _input: string,
+    onEvent: (event: AgentEvent) => void,
+  ): Promise<void> {
+    onEvent({
+      type: "status",
+      state: "thinking",
+      message: "event",
+    });
+  }
+
+  async resumeSession(_sessionId: string): Promise<SessionInfo> {
+    throw new Error("not used");
+  }
+
+  cancel(): void {}
+
+  dispose(): void {}
+}
+
 test("Bridge keeps the new Codex thread ID and reuses it for follow-up commands", async () => {
   const transport = {
     broadcast: () => {},
@@ -99,4 +139,54 @@ test("Bridge keeps the new Codex thread ID and reuses it for follow-up commands"
   assert.equal(adapter.startSessionCalls, 1, "should not restart the session");
   assert.equal(adapter.executeCalls, 2);
   assert.equal(adapter.lastExecuteSessionId, "real-session");
+});
+
+test("Bridge emits eventId values that are monotonic within each session", async () => {
+  const bridge = new Bridge({
+    agent: "codex",
+    port: 0,
+    workDir: process.cwd(),
+  });
+
+  const bridgeAny = bridge as unknown as {
+    transport: { broadcast: () => void };
+    adapter: AgentAdapter;
+    handleCommand: (client: { id: string; send: (message: unknown) => void }, text: string, sessionId?: string) => Promise<void>;
+  };
+
+  bridgeAny.transport = { broadcast: () => {} };
+  const adapter = new MultiSessionAdapter();
+  bridgeAny.adapter = adapter;
+
+  const sent: Array<Record<string, unknown>> = [];
+  const client = {
+    id: "client",
+    send: (message: unknown) => {
+      if (typeof message === "object" && message !== null) {
+        sent.push(message as Record<string, unknown>);
+      }
+    },
+  };
+
+  await bridgeAny.handleCommand(client, "s1 first");
+  await bridgeAny.handleCommand(client, "s2 first");
+  await bridgeAny.handleCommand(client, "s1 second", "session-1");
+  await bridgeAny.handleCommand(client, "s2 second", "session-2");
+
+  const eventMessages = sent.filter((message) => message.type === "event");
+  assert.equal(eventMessages.length, 4);
+
+  const bySession = new Map<string, number[]>();
+  for (const message of eventMessages) {
+    const sessionId = message.sessionId;
+    const eventId = message.eventId;
+    assert.equal(typeof sessionId, "string");
+    assert.equal(typeof eventId, "number");
+    const ids = bySession.get(sessionId as string) ?? [];
+    ids.push(eventId as number);
+    bySession.set(sessionId as string, ids);
+  }
+
+  assert.deepEqual(bySession.get("session-1"), [1, 2]);
+  assert.deepEqual(bySession.get("session-2"), [1, 2]);
 });

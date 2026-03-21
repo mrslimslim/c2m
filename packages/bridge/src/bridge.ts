@@ -51,7 +51,7 @@ export class Bridge {
   private sessions = new Map<string, SessionInfo>();
   private options: BridgeOptions;
   private tunnelStop: (() => void) | null = null;
-  private nextEventId = 1;
+  private nextEventIdBySession = new Map<string, number>();
 
   constructor(options: BridgeOptions) {
     this.options = options;
@@ -171,7 +171,7 @@ export class Bridge {
           type: "event",
           sessionId: message.sessionId,
           event: { type: "status", state: "idle", message: "Cancelled" },
-          eventId: this.allocateEventId(),
+          eventId: this.allocateEventId(message.sessionId),
           timestamp: Date.now(),
         });
         break;
@@ -192,6 +192,13 @@ export class Bridge {
 
       case "file_req":
         await this.handleFileRequest(client, message.path, message.sessionId);
+        break;
+
+      case "sync_session":
+        client.send({
+          type: "error",
+          message: "sync_session is not supported yet",
+        });
         break;
     }
   }
@@ -263,7 +270,7 @@ export class Bridge {
         type: "event",
         sessionId: sid!,
         event,
-        eventId: this.allocateEventId(),
+        eventId: this.allocateEventId(sid!),
         timestamp: Date.now(),
       });
     };
@@ -279,15 +286,15 @@ export class Bridge {
           type: "error",
           message: err instanceof Error ? err.message : String(err),
         },
-        eventId: this.allocateEventId(),
+        eventId: this.allocateEventId(sid),
         timestamp: Date.now(),
       });
     }
   }
 
-  private allocateEventId(): number {
-    const id = this.nextEventId;
-    this.nextEventId += 1;
+  private allocateEventId(sessionId: string): number {
+    const id = (this.nextEventIdBySession.get(sessionId) ?? 0) + 1;
+    this.nextEventIdBySession.set(sessionId, id);
     return id;
   }
 
