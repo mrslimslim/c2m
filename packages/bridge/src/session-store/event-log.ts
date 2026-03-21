@@ -1,9 +1,11 @@
 import type { AgentEvent } from "@codepilot/protocol";
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   defaultSessionEventLogPath,
   defaultSessionIndexPath,
+  defaultSessionStoreRoot,
   type SessionStorePathOptions,
 } from "./path.js";
 
@@ -31,14 +33,17 @@ export interface SessionEventLogStoreOptions extends SessionStorePathOptions {
   workDir: string;
 }
 
+const mutationQueueByStorageRoot = new Map<string, Promise<void>>();
+
 export class SessionEventLogStore {
   private readonly workDir: string;
   private readonly pathOptions: SessionStorePathOptions;
-  private mutationQueue: Promise<void> = Promise.resolve();
+  private readonly storageRootKeyPromise: Promise<string>;
 
   constructor(options: SessionEventLogStoreOptions) {
     this.workDir = options.workDir;
     this.pathOptions = { homeDir: options.homeDir };
+    this.storageRootKeyPromise = defaultSessionStoreRoot(this.workDir, this.pathOptions);
   }
 
   async appendEvent(input: {
@@ -189,7 +194,7 @@ export class SessionEventLogStore {
     const indexPath = await defaultSessionIndexPath(this.workDir, this.pathOptions);
     const indexDir = dirname(indexPath);
     await mkdir(indexDir, { recursive: true });
-    const tempPath = `${indexPath}.${process.pid}.${Date.now()}.tmp`;
+    const tempPath = `${indexPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
     await writeFile(tempPath, `${JSON.stringify(index, null, 2)}\n`, "utf-8");
     await rename(tempPath, indexPath);
   }
@@ -225,12 +230,21 @@ export class SessionEventLogStore {
   }
 
   private async runSerializedMutation<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(operation, operation);
-    this.mutationQueue = result.then(
+    const storageRootKey = await this.storageRootKeyPromise;
+    const previous = mutationQueueByStorageRoot.get(storageRootKey) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const settled = result.then(
       () => undefined,
       () => undefined,
     );
-    return result;
+    mutationQueueByStorageRoot.set(storageRootKey, settled);
+    try {
+      return await result;
+    } finally {
+      if (mutationQueueByStorageRoot.get(storageRootKey) === settled) {
+        mutationQueueByStorageRoot.delete(storageRootKey);
+      }
+    }
   }
 
   private async readLatestEventId(logPath: string): Promise<number> {

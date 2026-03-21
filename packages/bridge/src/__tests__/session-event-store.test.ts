@@ -178,6 +178,33 @@ test("parallel appends to the same session return unique monotonic event ids", a
   }
 });
 
+test("parallel appends across two store instances for same workDir remain monotonic", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "codepilot-home-"));
+  const workDir = await mkdtemp(join(tmpdir(), "codepilot-work-"));
+  const firstStore = new SessionEventLogStore({ workDir, homeDir });
+  const secondStore = new SessionEventLogStore({ workDir, homeDir });
+
+  try {
+    const writes = Array.from({ length: 20 }, (_, i) => {
+      const store = i % 2 === 0 ? firstStore : secondStore;
+      return store.appendEvent({
+        sessionId: "shared-session",
+        timestamp: 4500 + i,
+        event: { type: "status", state: "thinking", message: `shared-${i}` },
+      });
+    });
+    const persisted = await Promise.all(writes);
+    const ids = persisted.map((event) => event.eventId).sort((a, b) => a - b);
+    assert.deepEqual(
+      ids,
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    );
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true });
+  }
+});
+
 test("parallel appends to different sessions both persist index entries", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "codepilot-home-"));
   const workDir = await mkdtemp(join(tmpdir(), "codepilot-work-"));
