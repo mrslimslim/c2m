@@ -19,6 +19,7 @@ import { ClaudeAdapter } from "./adapters/claude.js";
 import { LocalTransport } from "./transport/local.js";
 import { displayQRCode } from "./pairing/qrcode.js";
 import { loadOrCreatePairingMaterial } from "./pairing/state.js";
+import { SessionEventLogStore, type PersistedSessionEvent } from "./session-store/event-log.js";
 import { log } from "./utils/logger.js";
 
 export interface BridgeOptions {
@@ -45,6 +46,16 @@ export const SENSITIVE_PATTERNS = [
   /\.key$/,
 ];
 
+interface ReplayState {
+  queuedEvents: Array<{
+    type: "event";
+    sessionId: string;
+    event: AgentEvent;
+    eventId: number;
+    timestamp: number;
+  }>;
+}
+
 export class Bridge {
   private adapter: AgentAdapter | null = null;
   private transport: TransportServer;
@@ -52,11 +63,17 @@ export class Bridge {
   private sessionAliases = new Map<string, string>();
   private options: BridgeOptions;
   private tunnelStop: (() => void) | null = null;
-  private nextEventIdBySession = new Map<string, number>();
+  private readonly connectedClients = new Map<string, TransportClient>();
+  private readonly replayStates = new Map<string, ReplayState>();
+  private readonly sessionEventStore: SessionEventLogStore;
+  private readonly deliveryQueueBySession = new Map<string, Promise<void>>();
 
   constructor(options: BridgeOptions) {
     this.options = options;
     this.transport = null as unknown as TransportServer;
+    this.sessionEventStore = new SessionEventLogStore({
+      workDir: this.options.workDir,
+    });
   }
 
   async start(): Promise<void> {
@@ -124,6 +141,7 @@ export class Bridge {
 
     // 4. Wire up event handlers
     this.transport.onConnect((client) => {
+      this.rememberClient(client);
       log.connection(`Device connected: ${client.id}`);
       // Send current session list
       client.send({
@@ -133,6 +151,8 @@ export class Bridge {
     });
 
     this.transport.onDisconnect((client) => {
+      this.connectedClients.delete(client.id);
+      this.clearReplayStateForClient(client.id);
       log.connection(`Device disconnected: ${client.id}`);
     });
 
@@ -161,6 +181,8 @@ export class Bridge {
     client: TransportClient,
     message: PhoneMessage,
   ): Promise<void> {
+    this.rememberClient(client);
+
     switch (message.type) {
       case "command":
         await this.handleCommand(client, message.text, message.sessionId, message.config);
@@ -168,15 +190,13 @@ export class Bridge {
 
       case "cancel":
         {
-          const sessionId = this.resolveCanonicalSessionId(message.sessionId);
+          const sessionId = await this.resolveCanonicalSessionId(message.sessionId);
           this.adapter?.cancel(sessionId);
-          client.send({
-            type: "event",
+          await this.persistAndDispatchEvent(
             sessionId,
-            event: { type: "status", state: "idle", message: "Cancelled" },
-            eventId: this.allocateEventId(sessionId),
-            timestamp: Date.now(),
-          });
+            { type: "status", state: "idle", message: "Cancelled" },
+            [client],
+          );
         }
         break;
 
@@ -199,10 +219,7 @@ export class Bridge {
         break;
 
       case "sync_session":
-        client.send({
-          type: "error",
-          message: "sync_session is not supported yet",
-        });
+        await this.handleSyncSession(client, message.sessionId, message.afterEventId);
         break;
     }
   }
@@ -213,13 +230,15 @@ export class Bridge {
     sessionId?: string,
     config?: SessionConfig,
   ): Promise<void> {
+    this.rememberClient(client);
+
     if (!this.adapter) {
       client.send({ type: "error", message: "No agent adapter available" });
       return;
     }
 
     // Start or find session
-    let sid = sessionId ? this.resolveCanonicalSessionId(sessionId) : undefined;
+    let sid = sessionId ? await this.resolveCanonicalSessionId(sessionId) : undefined;
     if (!sid || !this.sessions.has(sid)) {
       const opts: SessionOptions = {
         workDir: this.options.workDir,
@@ -241,85 +260,55 @@ export class Bridge {
 
     log.info(`[${sid.slice(0, 12)}] Execute: ${text.slice(0, 80)}`);
 
+    let eventChain = Promise.resolve();
     const onEvent = (event: AgentEvent) => {
-      const currentSession = this.sessions.get(sid!);
-      if (currentSession && currentSession.id !== sid) {
-        const oldId = sid!;
-        const newId = currentSession.id;
-        this.remapSessionAlias(oldId, newId);
-        this.remapEventCounter(oldId, newId);
-        this.sessions.delete(sid!);
-        sid = newId;
-        this.sessions.set(sid, currentSession);
-        this.transport.broadcast({
-          type: "session_list",
-          sessions: Array.from(this.sessions.values()),
-        });
-      }
-
-      log.event(sid!, event.type, this.eventSummary(event));
-
-      // Update session state
-      const session = this.sessions.get(sid!);
-      if (session) {
-        if ("state" in event) {
-          session.state = event.state;
-        } else if (event.type === "turn_completed") {
-          session.state = "idle";
-        } else if (event.type === "error") {
-          session.state = "error";
-        }
-        session.lastActiveAt = Date.now();
-      }
-
-      // Forward to phone
-      client.send({
-        type: "event",
-        sessionId: sid!,
-        event,
-        eventId: this.allocateEventId(sid!),
-        timestamp: Date.now(),
+      eventChain = eventChain.then(async () => {
+        sid = await this.syncSessionAlias(sid!);
+        log.event(sid!, event.type, this.eventSummary(event));
+        const persisted = await this.persistAndDispatchEvent(sid!, event);
+        sid = persisted.sessionId;
       });
+      void eventChain.catch(() => {});
     };
 
+    let executionError: unknown = null;
     try {
       await this.adapter.execute(sid, text, onEvent);
     } catch (err) {
-      log.error(`Execution error: ${err}`);
-      client.send({
-        type: "event",
-        sessionId: sid,
-        event: {
-          type: "error",
-          message: err instanceof Error ? err.message : String(err),
-        },
-        eventId: this.allocateEventId(sid),
-        timestamp: Date.now(),
+      executionError = err;
+    }
+
+    await eventChain;
+
+    if (executionError) {
+      log.error(`Execution error: ${executionError}`);
+      const persisted = await this.persistAndDispatchEvent(sid, {
+        type: "error",
+        message: executionError instanceof Error ? executionError.message : String(executionError),
       });
+      sid = persisted.sessionId;
     }
   }
 
-  private allocateEventId(sessionId: string): number {
-    const id = (this.nextEventIdBySession.get(sessionId) ?? 0) + 1;
-    this.nextEventIdBySession.set(sessionId, id);
-    return id;
+  private rememberClient(client: TransportClient): void {
+    this.connectedClients.set(client.id, client);
   }
 
-  private remapEventCounter(oldSessionId: string, newSessionId: string): void {
-    if (oldSessionId === newSessionId) return;
-    const oldCounter = this.nextEventIdBySession.get(oldSessionId);
-    if (oldCounter === undefined) return;
-    const newCounter = this.nextEventIdBySession.get(newSessionId) ?? 0;
-    this.nextEventIdBySession.set(newSessionId, Math.max(oldCounter, newCounter));
-    this.nextEventIdBySession.delete(oldSessionId);
+  private clearReplayStateForClient(clientId: string): void {
+    for (const key of this.replayStates.keys()) {
+      if (key.startsWith(`${clientId}:`)) {
+        this.replayStates.delete(key);
+      }
+    }
   }
 
-  private remapSessionAlias(oldSessionId: string, newSessionId: string): void {
+  private async remapSessionAlias(oldSessionId: string, newSessionId: string): Promise<void> {
     if (oldSessionId === newSessionId) return;
     this.sessionAliases.set(oldSessionId, newSessionId);
+    await this.sessionEventStore.remapSessionAlias(oldSessionId, newSessionId);
   }
 
-  private resolveCanonicalSessionId(sessionId: string): string {
+  private resolveCanonicalSessionIdLocally(sessionId: string): string {
     const visited = new Set<string>();
     let current = sessionId;
     while (true) {
@@ -329,6 +318,185 @@ export class Bridge {
       if (!next) return current;
       current = next;
     }
+  }
+
+  private async resolveCanonicalSessionId(sessionId: string): Promise<string> {
+    const local = this.resolveCanonicalSessionIdLocally(sessionId);
+    return this.sessionEventStore.resolveSessionId(local);
+  }
+
+  private async syncSessionAlias(sessionId: string): Promise<string> {
+    const currentSession = this.sessions.get(sessionId);
+    if (!currentSession) {
+      return this.resolveCanonicalSessionId(sessionId);
+    }
+
+    if (currentSession.id === sessionId) {
+      return this.resolveCanonicalSessionId(sessionId);
+    }
+
+    const nextSessionId = currentSession.id;
+    await this.remapSessionAlias(sessionId, nextSessionId);
+    this.sessions.delete(sessionId);
+    this.sessions.set(nextSessionId, currentSession);
+    this.transport.broadcast({
+      type: "session_list",
+      sessions: Array.from(this.sessions.values()),
+    });
+    return nextSessionId;
+  }
+
+  private async handleSyncSession(
+    client: TransportClient,
+    sessionId: string,
+    afterEventId: number,
+  ): Promise<void> {
+    const resolvedSessionId = await this.resolveCanonicalSessionId(sessionId);
+    const replayKey = this.replayStateKey(client.id, resolvedSessionId);
+    const replayState: ReplayState = { queuedEvents: [] };
+    this.replayStates.set(replayKey, replayState);
+
+    try {
+      const replayedEvents = await this.sessionEventStore.readEventsAfter(
+        resolvedSessionId,
+        afterEventId,
+      );
+      const sessionIndex = await this.sessionEventStore.loadSessionIndex(resolvedSessionId);
+
+      let latestEventId = afterEventId;
+      for (const replayed of replayedEvents) {
+        client.send(this.toEventMessage(replayed));
+        latestEventId = Math.max(latestEventId, replayed.eventId);
+      }
+
+      latestEventId = this.flushQueuedReplayEvents(client, resolvedSessionId, replayState, latestEventId);
+      latestEventId = Math.max(latestEventId, sessionIndex?.latestEventId ?? afterEventId);
+
+      client.send({
+        type: "session_sync_complete",
+        sessionId: resolvedSessionId,
+        latestEventId,
+        resolvedSessionId: resolvedSessionId !== sessionId ? resolvedSessionId : undefined,
+      });
+    } finally {
+      if (this.replayStates.get(replayKey) === replayState) {
+        this.replayStates.delete(replayKey);
+      }
+    }
+  }
+
+  private flushQueuedReplayEvents(
+    client: TransportClient,
+    sessionId: string,
+    replayState: ReplayState,
+    initialLatestEventId: number,
+  ): number {
+    let latestEventId = initialLatestEventId;
+
+    while (replayState.queuedEvents.length > 0) {
+      const queuedEvents = replayState.queuedEvents
+        .filter((message) => message.sessionId === sessionId && message.eventId > latestEventId)
+        .sort((left, right) => left.eventId - right.eventId);
+      replayState.queuedEvents = [];
+
+      if (queuedEvents.length === 0) break;
+
+      for (const queuedEvent of queuedEvents) {
+        client.send(queuedEvent);
+        latestEventId = queuedEvent.eventId;
+      }
+    }
+
+    return latestEventId;
+  }
+
+  private async persistAndDispatchEvent(
+    sessionId: string,
+    event: AgentEvent,
+    targetClients?: TransportClient[],
+  ): Promise<PersistedSessionEvent> {
+    const canonicalSessionId = await this.resolveCanonicalSessionId(sessionId);
+    const persisted = await this.sessionEventStore.appendEvent({
+      sessionId: canonicalSessionId,
+      timestamp: Date.now(),
+      event,
+    });
+
+    await this.enqueueDelivery(persisted.sessionId, async () => {
+      this.updateSessionState(persisted);
+      this.dispatchPersistedEvent(persisted, targetClients);
+    });
+
+    return persisted;
+  }
+
+  private updateSessionState(persisted: PersistedSessionEvent): void {
+    const session = this.sessions.get(persisted.sessionId);
+    if (!session) return;
+
+    const event = persisted.event;
+    if ("state" in event) {
+      session.state = event.state;
+    } else if (event.type === "turn_completed") {
+      session.state = "idle";
+    } else if (event.type === "error") {
+      session.state = "error";
+    }
+    session.lastActiveAt = persisted.timestamp;
+  }
+
+  private dispatchPersistedEvent(
+    persisted: PersistedSessionEvent,
+    targetClients?: TransportClient[],
+  ): void {
+    const message = this.toEventMessage(persisted);
+    const clients = targetClients ?? Array.from(this.connectedClients.values());
+
+    for (const client of clients) {
+      const replayState = this.replayStates.get(this.replayStateKey(client.id, persisted.sessionId));
+      if (replayState) {
+        replayState.queuedEvents.push(message);
+        continue;
+      }
+      client.send(message);
+    }
+  }
+
+  private toEventMessage(persisted: PersistedSessionEvent): {
+    type: "event";
+    sessionId: string;
+    event: AgentEvent;
+    eventId: number;
+    timestamp: number;
+  } {
+    return {
+      type: "event",
+      sessionId: persisted.sessionId,
+      event: persisted.event,
+      eventId: persisted.eventId,
+      timestamp: persisted.timestamp,
+    };
+  }
+
+  private async enqueueDelivery<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.deliveryQueueBySession.get(sessionId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.deliveryQueueBySession.set(sessionId, settled);
+    try {
+      return await result;
+    } finally {
+      if (this.deliveryQueueBySession.get(sessionId) === settled) {
+        this.deliveryQueueBySession.delete(sessionId);
+      }
+    }
+  }
+
+  private replayStateKey(clientId: string, sessionId: string): string {
+    return `${clientId}:${sessionId}`;
   }
 
   private async handleFileRequest(
