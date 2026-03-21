@@ -51,6 +51,7 @@ export class Bridge {
   private sessions = new Map<string, SessionInfo>();
   private options: BridgeOptions;
   private tunnelStop: (() => void) | null = null;
+  private nextEventId = 1;
 
   constructor(options: BridgeOptions) {
     this.options = options;
@@ -170,6 +171,7 @@ export class Bridge {
           type: "event",
           sessionId: message.sessionId,
           event: { type: "status", state: "idle", message: "Cancelled" },
+          eventId: this.allocateEventId(),
           timestamp: Date.now(),
         });
         break;
@@ -261,6 +263,7 @@ export class Bridge {
         type: "event",
         sessionId: sid!,
         event,
+        eventId: this.allocateEventId(),
         timestamp: Date.now(),
       });
     };
@@ -276,9 +279,16 @@ export class Bridge {
           type: "error",
           message: err instanceof Error ? err.message : String(err),
         },
+        eventId: this.allocateEventId(),
         timestamp: Date.now(),
       });
     }
+  }
+
+  private allocateEventId(): number {
+    const id = this.nextEventId;
+    this.nextEventId += 1;
+    return id;
   }
 
   private async handleFileRequest(

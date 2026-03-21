@@ -80,7 +80,7 @@ export interface EventMessage {
   type: "event";
   sessionId: string;
   event: AgentEvent;
-  eventId?: number;
+  eventId: number;
   timestamp: number;
 }
 
