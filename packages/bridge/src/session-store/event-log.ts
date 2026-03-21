@@ -1,5 +1,5 @@
 import type { AgentEvent } from "@codepilot/protocol";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   defaultSessionEventLogPath,
@@ -34,6 +34,7 @@ export interface SessionEventLogStoreOptions extends SessionStorePathOptions {
 export class SessionEventLogStore {
   private readonly workDir: string;
   private readonly pathOptions: SessionStorePathOptions;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(options: SessionEventLogStoreOptions) {
     this.workDir = options.workDir;
@@ -45,25 +46,28 @@ export class SessionEventLogStore {
     timestamp: number;
     event: AgentEvent;
   }): Promise<PersistedSessionEvent> {
-    const index = await this.loadIndexFile();
-    const canonicalSessionId = this.resolveCanonicalSessionIdFromIndex(index, input.sessionId);
-    const entry = await this.ensureSessionEntry(index, canonicalSessionId);
-    const eventId = entry.latestEventId + 1;
-    const persisted: PersistedSessionEvent = {
-      eventId,
-      sessionId: canonicalSessionId,
-      timestamp: input.timestamp,
-      event: input.event,
-    };
+    return this.runSerializedMutation(async () => {
+      const index = await this.loadIndexFile();
+      const canonicalSessionId = this.resolveCanonicalSessionIdFromIndex(index, input.sessionId);
+      const entry = await this.ensureSessionEntry(index, canonicalSessionId);
+      const latestFromLog = await this.readLatestEventId(entry.logPath);
+      const eventId = Math.max(entry.latestEventId, latestFromLog) + 1;
+      const persisted: PersistedSessionEvent = {
+        eventId,
+        sessionId: canonicalSessionId,
+        timestamp: input.timestamp,
+        event: input.event,
+      };
 
-    await mkdir(dirname(entry.logPath), { recursive: true });
-    await appendFile(entry.logPath, `${JSON.stringify(persisted)}\n`, "utf-8");
+      await mkdir(dirname(entry.logPath), { recursive: true });
+      await appendFile(entry.logPath, `${JSON.stringify(persisted)}\n`, "utf-8");
 
-    entry.latestEventId = eventId;
-    index.sessions[canonicalSessionId] = entry;
-    await this.saveIndexFile(index);
+      entry.latestEventId = eventId;
+      index.sessions[canonicalSessionId] = entry;
+      await this.saveIndexFile(index);
 
-    return persisted;
+      return persisted;
+    });
   }
 
   async readEventsAfter(sessionId: string, afterEventId: number): Promise<PersistedSessionEvent[]> {
@@ -72,74 +76,68 @@ export class SessionEventLogStore {
     const entry = index.sessions[canonicalSessionId];
     if (!entry) return [];
 
-    let raw: string;
-    try {
-      raw = await readFile(entry.logPath, "utf-8");
-    } catch (error) {
-      if (isNotFoundError(error)) return [];
-      throw error;
-    }
-
-    return raw
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as PersistedSessionEvent)
-      .filter((record) => record.eventId > afterEventId);
+    const records = await this.readLogRecords(entry.logPath);
+    return records.filter((record) => record.eventId > afterEventId);
   }
 
   async remapSessionAlias(aliasSessionId: string, canonicalSessionId: string): Promise<void> {
-    const index = await this.loadIndexFile();
-    const resolvedAlias = this.resolveCanonicalSessionIdFromIndex(index, aliasSessionId);
-    const resolvedCanonical = this.resolveCanonicalSessionIdFromIndex(index, canonicalSessionId);
+    await this.runSerializedMutation(async () => {
+      const index = await this.loadIndexFile();
+      const resolvedAlias = this.resolveCanonicalSessionIdFromIndex(index, aliasSessionId);
+      const resolvedCanonical = this.resolveCanonicalSessionIdFromIndex(index, canonicalSessionId);
+      const finalCanonical = resolvedCanonical;
+      const canonicalEntry = await this.ensureSessionEntry(index, finalCanonical);
 
-    const finalCanonical = resolvedAlias === resolvedCanonical
-      ? resolvedCanonical
-      : resolvedCanonical;
-    const canonicalEntry = await this.ensureSessionEntry(index, finalCanonical);
+      if (resolvedAlias !== finalCanonical) {
+        const aliasEntry = index.sessions[resolvedAlias];
+        const aliasRecords = aliasEntry ? await this.readLogRecords(aliasEntry.logPath) : [];
+        const canonicalRecords = await this.readLogRecords(canonicalEntry.logPath);
 
-    if (resolvedAlias !== finalCanonical) {
-      const aliasEntry = index.sessions[resolvedAlias];
-      if (aliasEntry) {
-        if (canonicalEntry.latestEventId === 0 && aliasEntry.latestEventId > 0) {
-          await mkdir(dirname(canonicalEntry.logPath), { recursive: true });
-          try {
-            await rename(aliasEntry.logPath, canonicalEntry.logPath);
-          } catch (error) {
-            if (!isNotFoundError(error)) {
-              throw error;
-            }
-          }
+        const mergedRecords = [
+          ...aliasRecords,
+          ...canonicalRecords,
+        ].map((record, indexInMerged): PersistedSessionEvent => ({
+          ...record,
+          sessionId: finalCanonical,
+          eventId: indexInMerged + 1,
+        }));
+
+        if (mergedRecords.length > 0) {
+          await this.writeLogRecords(canonicalEntry.logPath, mergedRecords);
         }
 
-        canonicalEntry.latestEventId = Math.max(canonicalEntry.latestEventId, aliasEntry.latestEventId);
+        canonicalEntry.latestEventId = mergedRecords.length;
         canonicalEntry.aliasSessionIds = dedupe([
           ...canonicalEntry.aliasSessionIds,
-          ...aliasEntry.aliasSessionIds,
+          ...(aliasEntry?.aliasSessionIds ?? []),
           resolvedAlias,
           aliasSessionId,
         ]);
         index.sessions[finalCanonical] = canonicalEntry;
         delete index.sessions[resolvedAlias];
+      } else {
+        const latestFromLog = await this.readLatestEventId(canonicalEntry.logPath);
+        canonicalEntry.latestEventId = Math.max(canonicalEntry.latestEventId, latestFromLog);
       }
-    }
 
-    canonicalEntry.aliasSessionIds = dedupe([
-      ...canonicalEntry.aliasSessionIds,
-      aliasSessionId,
-      resolvedAlias,
-    ]);
-    index.sessions[finalCanonical] = canonicalEntry;
+      canonicalEntry.aliasSessionIds = dedupe([
+        ...canonicalEntry.aliasSessionIds,
+        aliasSessionId,
+        resolvedAlias,
+      ]);
+      index.sessions[finalCanonical] = canonicalEntry;
 
-    index.aliases[aliasSessionId] = finalCanonical;
-    index.aliases[resolvedAlias] = finalCanonical;
+      index.aliases[aliasSessionId] = finalCanonical;
+      index.aliases[resolvedAlias] = finalCanonical;
 
-    for (const [alias, target] of Object.entries(index.aliases)) {
-      if (target === resolvedAlias) {
-        index.aliases[alias] = finalCanonical;
+      for (const [alias, target] of Object.entries(index.aliases)) {
+        if (target === resolvedAlias) {
+          index.aliases[alias] = finalCanonical;
+        }
       }
-    }
 
-    await this.saveIndexFile(index);
+      await this.saveIndexFile(index);
+    });
   }
 
   async resolveSessionId(sessionId: string): Promise<string> {
@@ -150,7 +148,14 @@ export class SessionEventLogStore {
   async loadSessionIndex(sessionId: string): Promise<SessionIndexEntry | null> {
     const index = await this.loadIndexFile();
     const canonicalSessionId = this.resolveCanonicalSessionIdFromIndex(index, sessionId);
-    return index.sessions[canonicalSessionId] ?? null;
+    const entry = index.sessions[canonicalSessionId];
+    if (!entry) return null;
+
+    const latestFromLog = await this.readLatestEventId(entry.logPath);
+    return {
+      ...entry,
+      latestEventId: Math.max(entry.latestEventId, latestFromLog),
+    };
   }
 
   private async loadIndexFile(): Promise<SessionIndexFile> {
@@ -213,6 +218,61 @@ export class SessionEventLogStore {
       current = next;
     }
   }
+
+  private async runSerializedMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation, operation);
+    this.mutationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async readLatestEventId(logPath: string): Promise<number> {
+    const records = await this.readLogRecords(logPath);
+    return records[records.length - 1]?.eventId ?? 0;
+  }
+
+  private async readLogRecords(logPath: string): Promise<PersistedSessionEvent[]> {
+    let raw: string;
+    try {
+      raw = await readFile(logPath, "utf-8");
+    } catch (error) {
+      if (isNotFoundError(error)) return [];
+      throw error;
+    }
+
+    const trailingNewline = raw.endsWith("\n");
+    const lines = raw.split("\n");
+    if (trailingNewline) {
+      lines.pop();
+    }
+
+    const records: PersistedSessionEvent[] = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line || line.trim().length === 0) continue;
+
+      const isLastLine = i === lines.length - 1;
+      const allowTornTail = isLastLine && !trailingNewline;
+      try {
+        records.push(parsePersistedSessionEventLine(line));
+      } catch (error) {
+        if (allowTornTail) {
+          break;
+        }
+        throw new Error(`Corrupt session event log at ${logPath}:${i + 1}`, { cause: error });
+      }
+    }
+
+    return records;
+  }
+
+  private async writeLogRecords(logPath: string, records: PersistedSessionEvent[]): Promise<void> {
+    await mkdir(dirname(logPath), { recursive: true });
+    const raw = records.map((record) => JSON.stringify(record)).join("\n");
+    await writeFile(logPath, `${raw}\n`, "utf-8");
+  }
 }
 
 function emptyIndexFile(): SessionIndexFile {
@@ -229,4 +289,23 @@ function dedupe(values: string[]): string[] {
 
 function isNotFoundError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function parsePersistedSessionEventLine(line: string): PersistedSessionEvent {
+  const parsed = JSON.parse(line) as Partial<PersistedSessionEvent>;
+  if (
+    typeof parsed.eventId !== "number" ||
+    typeof parsed.sessionId !== "string" ||
+    typeof parsed.timestamp !== "number" ||
+    typeof parsed.event !== "object" ||
+    parsed.event === null
+  ) {
+    throw new Error("Invalid persisted session event");
+  }
+  return {
+    eventId: parsed.eventId,
+    sessionId: parsed.sessionId,
+    timestamp: parsed.timestamp,
+    event: parsed.event as AgentEvent,
+  };
 }
