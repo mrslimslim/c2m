@@ -569,6 +569,67 @@ test("Bridge queues live events during replay and flushes them in eventId order"
   });
 });
 
+test("Bridge arms replay queueing before awaited canonical resolution can delay sync", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new SingleSessionAdapter("session-gap");
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    await bridgeAny.handleCommand(originalClient, "event 1");
+    await bridgeAny.handleCommand(originalClient, "event 2", "session-gap");
+    await bridgeAny.handleCommand(originalClient, "event 3", "session-gap");
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    const store = bridgeAny.sessionEventStore;
+    const originalResolveSessionId = store.resolveSessionId.bind(store);
+    const resolveStarted = createDeferred<void>();
+    const resolveRelease = createDeferred<void>();
+    let resolveCallCount = 0;
+
+    store.resolveSessionId = async (sessionId: string) => {
+      resolveCallCount += 1;
+      if (resolveCallCount === 1) {
+        resolveStarted.resolve();
+        await resolveRelease.promise;
+      }
+      return originalResolveSessionId(sessionId);
+    };
+
+    try {
+      const syncPromise = bridgeAny.handleMessage(reconnectClient, {
+        type: "sync_session",
+        sessionId: "session-gap",
+        afterEventId: 0,
+      });
+
+      await resolveStarted.promise;
+      await bridgeAny.handleCommand(originalClient, "event 4", "session-gap");
+
+      assert.deepEqual(
+        eventIds(reconnectClient),
+        [],
+        "reconnecting client should queue live events even while canonical sync resolution is pending",
+      );
+
+      resolveRelease.resolve();
+      await syncPromise;
+    } finally {
+      store.resolveSessionId = originalResolveSessionId;
+    }
+
+    assert.deepEqual(eventIds(reconnectClient), [1, 2, 3, 4]);
+    assert.deepEqual(statusMessages(reconnectClient), [
+      "event-1",
+      "event-2",
+      "event-3",
+      "event-4",
+    ]);
+  });
+});
+
 test("Bridge replays a temp Codex session alias as one continuous session history", async () => {
   await withBridgeHarness(async ({ bridgeAny }) => {
     bridgeAny.adapter = new RemapDuringExecuteAdapter();
@@ -598,6 +659,68 @@ test("Bridge replays a temp Codex session alias as one continuous session histor
     assert.equal(syncComplete.sessionId, "real-session-remap");
     assert.equal(syncComplete.resolvedSessionId, "real-session-remap");
     assert.equal(syncComplete.latestEventId, 4);
+  });
+});
+
+test("Bridge delays remap session_list broadcast until the remap event has been persisted", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    const broadcastMessages: RecordedMessage[] = [];
+    bridgeAny.transport = {
+      broadcast: (message?: unknown) => {
+        if (typeof message === "object" && message !== null) {
+          broadcastMessages.push(message as RecordedMessage);
+        }
+      },
+    };
+    bridgeAny.adapter = new RemapDuringExecuteAdapter();
+
+    const client = createClient("client");
+    connectClient(bridgeAny, client);
+
+    const store = bridgeAny.sessionEventStore;
+    const originalAppendEvent = store.appendEvent.bind(store);
+    const appendStarted = createDeferred<void>();
+    const appendRelease = createDeferred<void>();
+    let appendCallCount = 0;
+
+    store.appendEvent = async (input) => {
+      appendCallCount += 1;
+      if (appendCallCount === 1) {
+        appendStarted.resolve();
+        await appendRelease.promise;
+      }
+      return originalAppendEvent(input);
+    };
+
+    try {
+      const commandPromise = bridgeAny.handleCommand(client, "command with remap");
+
+      await appendStarted.promise;
+      await waitFor(
+        () => broadcastMessages.length >= 1,
+        "expected initial session_list broadcast for the new session",
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(
+        broadcastMessages.length,
+        1,
+        "remap session_list broadcast should wait until the remap event append finishes",
+      );
+
+      appendRelease.resolve();
+      await commandPromise;
+    } finally {
+      store.appendEvent = originalAppendEvent;
+    }
+
+    assert.equal(broadcastMessages.length, 2);
+    const remapBroadcast = broadcastMessages[1];
+    assert.equal(remapBroadcast?.type, "session_list");
+    assert.deepEqual(
+      (remapBroadcast?.sessions as Array<{ id: string }>).map((session) => session.id),
+      ["real-session-remap"],
+    );
   });
 });
 
