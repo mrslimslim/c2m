@@ -63,6 +63,7 @@ public final class SessionDetailViewModel {
 
         try sender.send(.command(text: text, sessionId: currentSessionId, config: wireConfig))
         timelineStore.appendUserCommand(text, sessionId: currentSessionId)
+        sessionStore.updateState(for: currentSessionId, state: .thinking)
         sessionStore.setDraft("", for: currentSessionId)
     }
 

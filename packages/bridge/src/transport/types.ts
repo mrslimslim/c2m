@@ -13,7 +13,12 @@ export interface TransportServer {
   /**
    * Start the transport server and return the connection URL / pairing info.
    */
-  start(): Promise<{ url: string; httpUrl: string; pairingData: Record<string, unknown> }>;
+  start(): Promise<{
+    url: string;
+    httpUrl: string;
+    pairingData: Record<string, unknown>;
+    listenUrl?: string;
+  }>;
 
   /**
    * Register a handler for incoming messages from any connected client.

@@ -179,3 +179,13 @@ Primary screens:
   - local network permission prompts
   - disconnect / reconnect handling
   - file viewer and cancel flows
+
+## Follow-up TODOs
+
+- Make pairing stable, saveable, and one-scan reconnect friendly for self-use:
+  - persist enough bridge identity and pairing material that routine bridge restarts do not force a full re-pair
+  - support an explicit advertised host / endpoint so the QR payload can point at a stable reachable address instead of a transient auto-detected LAN IP
+  - tighten the QR / pasted payload format so saving a connection on iOS is the normal path, not a best-effort convenience
+- Keep Tailscale as an optional self-use network path, not a required baseline:
+  - do not make Tailscale mandatory for the iOS client to work
+  - treat VPN-based access as an advanced option because it may conflict with existing macOS proxy tooling such as Clash

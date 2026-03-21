@@ -16,9 +16,11 @@ import {
   deriveSessionKey,
   encrypt,
   generateKeyPair,
+  type E2EKeyPair,
   type E2ESession,
   type EncryptedMessage,
 } from "../pairing/crypto.js";
+import type { PairingMaterial } from "../pairing/state.js";
 import { log } from "../utils/logger.js";
 import { validatePhoneMessage } from "./local.js";
 
@@ -39,6 +41,7 @@ type RelayWebSocketCtor = new (...args: any[]) => RelayWebSocket;
 
 interface RelayTransportOptions {
   WebSocketCtor?: RelayWebSocketCtor;
+  pairingMaterial?: PairingMaterial;
 }
 
 function isEncryptedWireMessage(value: unknown): value is EncryptedMessage {
@@ -68,7 +71,7 @@ export class RelayTransport implements TransportServer {
   private authenticated = false;
 
   // E2E keypair
-  private keyPair = generateKeyPair();
+  private keyPair: E2EKeyPair;
 
   private messageHandlers: Array<
     (client: TransportClient, message: PhoneMessage) => void
@@ -80,25 +83,24 @@ export class RelayTransport implements TransportServer {
     // Normalize URL (remove trailing slash)
     this.relayUrl = relayUrl.replace(/\/$/, "");
     this.webSocketCtor = options.WebSocketCtor ?? (WebSocket as unknown as RelayWebSocketCtor);
+    this.keyPair = options.pairingMaterial?.keyPair ?? generateKeyPair();
+    this.otp = options.pairingMaterial?.otp ?? null;
 
-    // Channel ID = first 12 chars of sha256(bridge_pubkey)
-    const hash = createHash("sha256")
-      .update(this.keyPair.publicKeyBase64)
-      .digest("hex");
-    this.channelId = hash.slice(0, 12);
+    this.channelId = this.deriveChannelId(this.keyPair.publicKeyBase64);
   }
 
   async start(): Promise<{
     url: string;
     httpUrl: string;
     pairingData: Record<string, unknown>;
+    listenUrl: string;
   }> {
     this.stopping = false;
     this.authenticated = false;
     this.e2eSession = null;
     await this.connectToRelay();
 
-    this.otp = randomBytes(3).toString("hex");
+    this.otp = this.otp ?? randomBytes(3).toString("hex");
     const pairingData = {
       relay: this.relayUrl,
       channel: this.channelId,
@@ -108,7 +110,7 @@ export class RelayTransport implements TransportServer {
     };
 
     const url = `${this.relayUrl}/ws?device=phone&channel=${this.channelId}`;
-    return { url, httpUrl: "", pairingData };
+    return { url, httpUrl: "", pairingData, listenUrl: url };
   }
 
   private connectToRelay(): Promise<void> {
@@ -230,6 +232,13 @@ export class RelayTransport implements TransportServer {
         }
       });
     });
+  }
+
+  private deriveChannelId(publicKeyBase64: string): string {
+    return createHash("sha256")
+      .update(publicKeyBase64)
+      .digest("hex")
+      .slice(0, 12);
   }
 
   private scheduleReconnect(): void {

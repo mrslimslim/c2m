@@ -141,8 +141,8 @@ Expected: PASS with matches in the existing docs.
 
 **Step 4: Run the check to verify it passes**
 
-Run: `rg -n "apps/ios/(CodePilotApp|CodePilotKit)" docs`
-Expected: no matches for active repository paths.
+Run: `rg -n "apps/ios/(CodePilotApp|CodePilotKit)" docs --glob '!docs/plans/**'`
+Expected: no matches for active repository paths outside historical planning documents.
 
 **Step 5: Commit**
 
@@ -168,8 +168,8 @@ Expected: BUILD SUCCEEDED.
 
 **Step 3: Run the final path audit**
 
-Run: `rg -n "apps/ios" packages/ios docs`
-Expected: no remaining active-path references in the migrated tree or updated docs.
+Run: `rg -n "apps/ios" packages/ios docs --glob '!docs/plans/**'`
+Expected: no remaining active-path references in the migrated tree or in non-plan documentation.
 
 **Step 4: Commit**
 

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct FileState: Equatable, Sendable {
+public struct FileState: Codable, Equatable, Sendable {
     public let path: String
     public let content: String
     public let language: String
@@ -11,6 +11,19 @@ public struct FileState: Equatable, Sendable {
         self.content = content
         self.language = language
         self.isLoading = isLoading
+    }
+}
+
+public struct FileStoreSnapshot: Codable, Equatable, Sendable {
+    public let fileStatesBySession: [String: [String: FileState]]
+    public let pendingRequestsByPath: [String: [String]]
+
+    public init(
+        fileStatesBySession: [String: [String: FileState]],
+        pendingRequestsByPath: [String: [String]]
+    ) {
+        self.fileStatesBySession = fileStatesBySession
+        self.pendingRequestsByPath = pendingRequestsByPath
     }
 }
 
@@ -105,6 +118,29 @@ public final class FileStore {
             }
             pendingRequestsByPath[path] = queue.map { $0 == oldSessionId ? newSessionId : $0 }
         }
+    }
+
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        fileStatesBySession.removeAll()
+        pendingRequestsByPath.removeAll()
+    }
+
+    public func snapshot() -> FileStoreSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return .init(
+            fileStatesBySession: fileStatesBySession,
+            pendingRequestsByPath: pendingRequestsByPath
+        )
+    }
+
+    public func restore(from snapshot: FileStoreSnapshot) {
+        lock.lock()
+        defer { lock.unlock() }
+        fileStatesBySession = snapshot.fileStatesBySession
+        pendingRequestsByPath = snapshot.pendingRequestsByPath
     }
 
     private func dequeuePendingSessionIdLocked(path: String) -> String? {

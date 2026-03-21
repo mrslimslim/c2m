@@ -44,6 +44,7 @@ final class SessionDetailViewModelTests: XCTestCase {
 
         XCTAssertEqual(sender.messages, [.command(text: "swift test", sessionId: session.id, config: nil)])
         XCTAssertEqual(timelineStore.timeline(for: session.id).map(\.kind), [.userCommand(text: "swift test")])
+        XCTAssertEqual(sessionStore.session(for: session.id)?.state, .thinking)
         XCTAssertEqual(viewModel.draft, "")
     }
 

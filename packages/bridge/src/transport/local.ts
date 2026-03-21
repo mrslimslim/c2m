@@ -21,6 +21,7 @@ import {
   decrypt,
   type E2ESession,
 } from "../pairing/crypto.js";
+import type { PairingMaterial } from "../pairing/state.js";
 import { log } from "../utils/logger.js";
 
 const DEFAULT_PORT = 19260;
@@ -85,6 +86,7 @@ export class LocalTransport implements TransportServer {
   private token: string;
   private port: number;
   private host: string;
+  private advertisedHost?: string;
 
   // E2E encryption keypair
   private keyPair: ReturnType<typeof generateKeyPair>;
@@ -96,15 +98,26 @@ export class LocalTransport implements TransportServer {
   private connectHandlers: Array<(client: TransportClient) => void> = [];
   private disconnectHandlers: Array<(client: TransportClient) => void> = [];
 
-  constructor(port: number = DEFAULT_PORT, host: string = "0.0.0.0") {
+  constructor(
+    port: number = DEFAULT_PORT,
+    host: string = "0.0.0.0",
+    advertisedHost?: string,
+    pairingMaterial?: PairingMaterial,
+  ) {
     this.port = port;
     this.host = host;
-    this.token = randomBytes(16).toString("hex");
-    this.keyPair = generateKeyPair();
-    this.otp = randomBytes(3).toString("hex"); // 6-char hex OTP
+    this.advertisedHost = this.normalizeAdvertisedHost(advertisedHost);
+    this.token = pairingMaterial?.token ?? randomBytes(16).toString("hex");
+    this.keyPair = pairingMaterial?.keyPair ?? generateKeyPair();
+    this.otp = pairingMaterial?.otp ?? randomBytes(3).toString("hex"); // 6-char hex OTP
   }
 
-  async start(): Promise<{ url: string; httpUrl: string; pairingData: Record<string, unknown> }> {
+  async start(): Promise<{
+    url: string;
+    httpUrl: string;
+    pairingData: Record<string, unknown>;
+    listenUrl: string;
+  }> {
     return new Promise((resolvePromise, reject) => {
       // Create HTTP server to serve test client
       this.httpServer = createServer((req, res) => {
@@ -148,18 +161,21 @@ export class LocalTransport implements TransportServer {
       this.httpServer.listen(this.port, this.host, () => {
         const isIPv6 = this.host.includes(":");
         const localIp = this.getLocalIp(isIPv6);
-        const hostForUrl = localIp.includes(":") ? `[${localIp}]` : localIp;
+        const advertisedHost = this.advertisedHost ?? localIp;
+        const hostForUrl = advertisedHost.includes(":") ? `[${advertisedHost}]` : advertisedHost;
+        const listenHostForUrl = localIp.includes(":") ? `[${localIp}]` : localIp;
         const url = `ws://${hostForUrl}:${this.port}`;
         const httpUrl = `http://${hostForUrl}:${this.port}`;
+        const listenUrl = `ws://${listenHostForUrl}:${this.port}`;
         const pairingData = {
-          host: localIp,
+          host: advertisedHost,
           port: this.port,
           token: this.token,
           bridge_pubkey: this.keyPair.publicKeyBase64,
           otp: this.otp,
           protocol: "codepilot-v1-e2e",
         };
-        resolvePromise({ url, httpUrl, pairingData });
+        resolvePromise({ url, httpUrl, pairingData, listenUrl });
       });
 
       this.httpServer.on("error", reject);
@@ -398,5 +414,14 @@ export class LocalTransport implements TransportServer {
       }
     }
     return preferIPv6 ? "::1" : "127.0.0.1";
+  }
+
+  private normalizeAdvertisedHost(host?: string): string | undefined {
+    const trimmed = host?.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    return trimmed.replace(/^\[(.*)\]$/, "$1");
   }
 }

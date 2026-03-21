@@ -45,6 +45,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var selectedSavedConnectionID: String?
     @Published private(set) var currentConnectionSummary: String = "Disconnected"
     @Published private(set) var slotStates: [String: String] = [:]
+    @Published private(set) var sessionNavigationTargets: [String: String] = [:]
     @Published var latestErrorMessage: String?
 
     private let sessionStore: SessionStore
@@ -53,16 +54,25 @@ final class AppModel: ObservableObject {
     private let diagnosticsStore: DiagnosticsStore
     private let diagnosticsViewModel: DiagnosticsViewModel
     private let savedConnectionStore: SavedConnectionStore
+    private let conversationSnapshotStore: ConversationSnapshotStore
     private let connectionsViewModel: ConnectionsViewModel
+    private let pendingSessionCoordinator: PendingSessionCoordinator
     private let persistsSavedConnections: Bool
+    private let persistsConversationState: Bool
 
-    // Multi-connection slots
+    // Runtime connection state.
+    // We keep multiple saved configurations, but only allow one live bridge
+    // connection at a time so session and file routing stay unambiguous.
     private var slots: [String: ConnectionSlot] = [:]
     private var sessionToSlotID: [String: String] = [:]
     private var pingTimer: Timer?
 
     // Fallback stub sender for preview / offline use
     private var stubSender: InMemoryPhoneMessageSender?
+
+    private var activeSlotID: String? {
+        slots.keys.first
+    }
 
     convenience init() {
         let sessionStore = SessionStore()
@@ -71,6 +81,8 @@ final class AppModel: ObservableObject {
         let diagnosticsStore = DiagnosticsStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
         let savedConnectionStore = SavedConnectionStore()
+        let conversationSnapshotStore = ConversationSnapshotStore()
+        let restoredConversationSnapshot = conversationSnapshotStore.loadSnapshot()
         let stubSender = InMemoryPhoneMessageSender()
         let restoredSnapshot = savedConnectionStore.loadSnapshot()
         let initialSnapshot: SavedConnectionsSnapshot
@@ -84,6 +96,13 @@ final class AppModel: ObservableObject {
         }
         let connectionsViewModel = ConnectionsViewModel(savedConnections: initialSnapshot.connections)
         _ = connectionsViewModel.selectSavedConnection(id: initialSnapshot.selectedConnectionID)
+        let pendingSessionCoordinator = PendingSessionCoordinator()
+
+        if let restoredConversationSnapshot {
+            sessionStore.restore(from: restoredConversationSnapshot.sessionStore)
+            timelineStore.restore(from: restoredConversationSnapshot.timelineStore)
+            fileStore.restore(from: restoredConversationSnapshot.fileStore)
+        }
 
         self.init(
             sessionStore: sessionStore,
@@ -92,12 +111,20 @@ final class AppModel: ObservableObject {
             diagnosticsStore: diagnosticsStore,
             diagnosticsViewModel: diagnosticsViewModel,
             savedConnectionStore: savedConnectionStore,
+            conversationSnapshotStore: conversationSnapshotStore,
             stubSender: stubSender,
             connectionsViewModel: connectionsViewModel,
+            pendingSessionCoordinator: pendingSessionCoordinator,
             currentConnectionSummary: "Disconnected",
             latestErrorMessage: nil,
-            persistsSavedConnections: true
+            persistsSavedConnections: true,
+            persistsConversationState: true
         )
+
+        if let restoredConversationSnapshot {
+            sessionToSlotID = restoredConversationSnapshot.sessionToConnectionID
+            refreshPublishedState()
+        }
 
         if restoredSnapshot.connections.isEmpty {
             do {
@@ -121,11 +148,14 @@ final class AppModel: ObservableObject {
         diagnosticsStore: DiagnosticsStore,
         diagnosticsViewModel: DiagnosticsViewModel,
         savedConnectionStore: SavedConnectionStore,
+        conversationSnapshotStore: ConversationSnapshotStore,
         stubSender: InMemoryPhoneMessageSender?,
         connectionsViewModel: ConnectionsViewModel,
+        pendingSessionCoordinator: PendingSessionCoordinator,
         currentConnectionSummary: String,
         latestErrorMessage: String?,
-        persistsSavedConnections: Bool
+        persistsSavedConnections: Bool,
+        persistsConversationState: Bool
     ) {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
@@ -133,11 +163,14 @@ final class AppModel: ObservableObject {
         self.diagnosticsStore = diagnosticsStore
         self.diagnosticsViewModel = diagnosticsViewModel
         self.savedConnectionStore = savedConnectionStore
+        self.conversationSnapshotStore = conversationSnapshotStore
         self.stubSender = stubSender
         self.connectionsViewModel = connectionsViewModel
+        self.pendingSessionCoordinator = pendingSessionCoordinator
         self.currentConnectionSummary = currentConnectionSummary
         self.latestErrorMessage = latestErrorMessage
         self.persistsSavedConnections = persistsSavedConnections
+        self.persistsConversationState = persistsConversationState
 
         refreshPublishedState()
     }
@@ -157,7 +190,8 @@ final class AppModel: ObservableObject {
         return selected
     }
 
-    /// Connect a saved connection by its ID. Creates a new slot if needed.
+    /// Connect a saved connection by its ID.
+    /// Self-use mode keeps only one live connection at a time.
     func connectSavedConnection(id: String) {
         guard let saved = connectionsViewModel.savedConnections.first(where: { $0.id == id }) else {
             latestErrorMessage = "Connection not found."
@@ -165,8 +199,8 @@ final class AppModel: ObservableObject {
             return
         }
 
-        // Disconnect existing slot if any
-        disconnectSavedConnection(id: id)
+        _ = selectSavedConnection(id: id)
+        disconnectAllRuntimeConnections()
 
         let config = saved.config
         let socketURL = socketURLString(for: config)
@@ -258,11 +292,35 @@ final class AppModel: ObservableObject {
         connectSavedConnection(id: id)
     }
 
+    func updateSavedConnection(id: String, payload: String) throws {
+        let config = try connectionsViewModel.parsePayload(payload)
+        try updateSavedConnection(id: id, config: config)
+    }
+
+    func updateSavedConnection(id: String, config: ConnectionConfig) throws {
+        guard let index = connectionsViewModel.savedConnections.firstIndex(where: { $0.id == id }) else {
+            throw AppModelError.connectionNotFound
+        }
+
+        let existing = connectionsViewModel.savedConnections[index]
+        var connections = connectionsViewModel.savedConnections
+        connections[index] = SavedConnection(
+            id: existing.id,
+            name: existing.name,
+            config: config
+        )
+        connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: id)
+        persistSavedConnections()
+        latestErrorMessage = nil
+        refreshPublishedState()
+        connectSavedConnection(id: id)
+    }
+
     func disconnectSavedConnection(id: String) {
         guard let slot = slots.removeValue(forKey: id) else { return }
         slot.controller.disconnect()
-        // Remove session→slot mappings for this slot
-        sessionToSlotID = sessionToSlotID.filter { $0.value != id }
+        pendingSessionCoordinator.clearPendingCommand(for: id)
+        clearSessionNavigationTarget(for: id)
         if slots.isEmpty {
             stopPingTimer()
         }
@@ -270,12 +328,7 @@ final class AppModel: ObservableObject {
     }
 
     func disconnectAll() {
-        for (id, slot) in slots {
-            slot.controller.disconnect()
-            slots.removeValue(forKey: id)
-        }
-        sessionToSlotID.removeAll()
-        stopPingTimer()
+        disconnectAllRuntimeConnections()
         refreshPublishedState()
     }
 
@@ -295,31 +348,32 @@ final class AppModel: ObservableObject {
 
     /// Returns IDs of all currently connected slots.
     var connectedSlotIDs: [String] {
-        slots.compactMap { id, slot in
-            if case .connected = slot.controller.state { return id }
-            return nil
+        guard let activeSlotID, let slot = slots[activeSlotID] else {
+            return []
         }
+        if case .connected = slot.controller.state {
+            return [activeSlotID]
+        }
+        return []
     }
 
     // MARK: - Session Management
 
     func refreshSessions() {
-        // Send list_sessions to all connected slots
-        var anySuccess = false
-        for (_, slot) in slots {
-            if case .connected = slot.controller.state {
-                do {
-                    try slot.controller.send(.listSessions)
-                    anySuccess = true
-                } catch {
-                    diagnosticsStore.recordError("refresh sessions failed: \(error.localizedDescription)")
-                }
+        guard let activeSlotID, let slot = slots[activeSlotID], case .connected = slot.controller.state else {
+            if !slots.isEmpty {
+                latestErrorMessage = "Unable to refresh sessions."
+                refreshPublishedState()
             }
+            return
         }
-        if !anySuccess && !slots.isEmpty {
-            latestErrorMessage = "Unable to refresh sessions."
-        } else {
+
+        do {
+            try slot.controller.send(.listSessions)
             latestErrorMessage = nil
+        } catch {
+            latestErrorMessage = "Unable to refresh sessions."
+            diagnosticsStore.recordError("refresh sessions failed: \(error.localizedDescription)")
         }
         refreshPublishedState()
     }
@@ -339,8 +393,11 @@ final class AppModel: ObservableObject {
 
     /// Return sessions that belong to a specific connection.
     func sessionsForConnection(_ connectionID: String) -> [SessionInfo] {
-        sessions.filter { session in
-            sessionToSlotID[session.id] == connectionID
+        return sessions.filter { session in
+            if sessionToSlotID[session.id] == connectionID {
+                return true
+            }
+            return activeSlotID == connectionID && sessionToSlotID[session.id] == nil
         }
     }
 
@@ -398,6 +455,8 @@ final class AppModel: ObservableObject {
         }
         let wireConfig = config?.isEmpty == true ? nil : config
         try slot.controller.send(.command(text: text, sessionId: nil, config: wireConfig))
+        pendingSessionCoordinator.registerPendingCommand(text, for: slotID)
+        clearSessionNavigationTarget(for: slotID)
         diagnosticsStore.recordInfo("new session command sent to \(slotID): \(text.prefix(40))")
         refreshPublishedState()
     }
@@ -433,6 +492,14 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func sessionNavigationTarget(for connectionID: String) -> String? {
+        sessionNavigationTargets[connectionID]
+    }
+
+    func consumeSessionNavigationTarget(for connectionID: String) {
+        clearSessionNavigationTarget(for: connectionID)
+    }
+
     func refreshPublishedState() {
         sessions = sessionStore.sessions
         activeSessionID = sessionStore.activeSessionId
@@ -450,30 +517,13 @@ final class AppModel: ObservableObject {
         }
         slotStates = states
 
-        // Aggregate overall summary
-        let totalSlots = slots.count
-        let connectedCount = slots.values.filter {
-            if case .connected = $0.controller.state { return true }
-            return false
-        }.count
-
-        if totalSlots == 0 {
-            currentConnectionSummary = "Disconnected"
-        } else if connectedCount == totalSlots {
-            currentConnectionSummary = connectedCount == 1
-                ? (slots.values.first?.summary ?? "Connected")
-                : "All connected (\(connectedCount))"
-        } else if connectedCount > 0 {
-            currentConnectionSummary = "\(connectedCount)/\(totalSlots) connected"
+        if let activeSlotID, let slot = slots[activeSlotID] {
+            currentConnectionSummary = slot.summary
         } else {
-            // Some slots exist but none connected
-            let hasConnecting = slots.values.contains {
-                if case .connecting = $0.controller.state { return true }
-                if case .reconnecting = $0.controller.state { return true }
-                return false
-            }
-            currentConnectionSummary = hasConnecting ? "Connecting..." : "Disconnected"
+            currentConnectionSummary = "Disconnected"
         }
+
+        persistConversationState()
     }
 
     // MARK: - Slot State Handling
@@ -511,16 +561,50 @@ final class AppModel: ObservableObject {
 
     private func handleSlotBridgeMessage(slotID: String, message: BridgeMessage) {
         guard let slot = slots[slotID] else { return }
+        let knownSessionIDs = knownSessionIDs(for: slotID)
 
-        // Track session→slot mapping from session_list messages
-        if case let .sessionList(sessions) = message {
+        slot.router.handle(message)
+
+        switch message {
+        case let .sessionList(sessions):
             for session in sessions {
                 sessionToSlotID[session.id] = slotID
             }
+            if let resolution = pendingSessionCoordinator.resolvePendingCommand(
+                for: slotID,
+                knownSessionIDs: knownSessionIDs,
+                incomingSessions: sessions
+            ) {
+                applyPendingSessionResolution(resolution)
+            }
+
+        case let .event(sessionId, _, _):
+            let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            if let resolution = pendingSessionCoordinator.resolvePendingCommand(
+                for: slotID,
+                knownSessionIDs: knownSessionIDs,
+                incomingEventSessionID: resolvedSessionID
+            ) {
+                applyPendingSessionResolution(resolution)
+            }
+            sessionToSlotID[resolvedSessionID] = slotID
+
+        case .fileContent, .pong, .error:
+            break
         }
 
-        slot.router.handle(message)
         refreshPublishedState()
+    }
+
+    private func disconnectAllRuntimeConnections() {
+        let activeSlots = Array(slots.values)
+        for slot in activeSlots {
+            slot.controller.disconnect()
+            pendingSessionCoordinator.clearPendingCommand(for: slot.savedConnectionID)
+            clearSessionNavigationTarget(for: slot.savedConnectionID)
+        }
+        slots.removeAll()
+        stopPingTimer()
     }
 
     // MARK: - Ping Keep-alive
@@ -546,14 +630,14 @@ final class AppModel: ObservableObject {
 
     private func sendPingToAllSlots() {
         let ts = Int(Date().timeIntervalSince1970 * 1000)
-        for (id, slot) in slots {
-            if case .connected = slot.controller.state {
-                do {
-                    try slot.controller.send(.ping(ts: ts))
-                } catch {
-                    diagnosticsStore.recordError("[\(id)] ping failed: \(error.localizedDescription)")
-                }
-            }
+        guard let activeSlotID, let slot = slots[activeSlotID], case .connected = slot.controller.state else {
+            refreshPublishedState()
+            return
+        }
+        do {
+            try slot.controller.send(.ping(ts: ts))
+        } catch {
+            diagnosticsStore.recordError("[\(activeSlotID)] ping failed: \(error.localizedDescription)")
         }
         refreshPublishedState()
     }
@@ -573,6 +657,74 @@ final class AppModel: ObservableObject {
         } catch {
             diagnosticsStore.recordError("save connections failed: \(error.localizedDescription)")
         }
+    }
+
+    private func persistConversationState() {
+        guard persistsConversationState else { return }
+
+        do {
+            try conversationSnapshotStore.saveSnapshot(
+                .init(
+                    sessionStore: sessionStore.snapshot(),
+                    timelineStore: timelineStore.snapshot(),
+                    fileStore: fileStore.snapshot(),
+                    sessionToConnectionID: sessionToSlotID
+                )
+            )
+        } catch {
+            diagnosticsStore.recordError("save conversation snapshot failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func knownSessionIDs(for connectionID: String) -> [String] {
+        Array(sessionToSlotID.compactMap { sessionID, slotID in
+            slotID == connectionID ? sessionID : nil
+        })
+    }
+
+    private func applyPendingSessionResolution(_ resolution: PendingSessionResolution) {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: resolution.sessionID) ?? resolution.sessionID
+        sessionToSlotID[resolvedSessionID] = resolution.connectionID
+
+        let hasMatchingStarter = timelineStore.timeline(for: resolvedSessionID).contains { item in
+            if case let .userCommand(text) = item.kind {
+                return text == resolution.command
+            }
+            return false
+        }
+        if !hasMatchingStarter {
+            timelineStore.appendUserCommand(
+                resolution.command,
+                sessionId: resolvedSessionID,
+                timestamp: resolution.timestamp
+            )
+        }
+
+        if let state = sessionStore.session(for: resolvedSessionID)?.state {
+            if state == .idle {
+                sessionStore.updateState(for: resolvedSessionID, state: .thinking)
+            }
+        } else {
+            sessionStore.updateState(for: resolvedSessionID, state: .thinking)
+        }
+
+        sessionStore.setActiveSession(id: resolvedSessionID)
+        setSessionNavigationTarget(sessionID: resolvedSessionID, for: resolution.connectionID)
+    }
+
+    private func setSessionNavigationTarget(sessionID: String, for connectionID: String) {
+        var targets = sessionNavigationTargets
+        targets[connectionID] = sessionID
+        sessionNavigationTargets = targets
+    }
+
+    private func clearSessionNavigationTarget(for connectionID: String) {
+        guard sessionNavigationTargets[connectionID] != nil else {
+            return
+        }
+        var targets = sessionNavigationTargets
+        targets[connectionID] = nil
+        sessionNavigationTargets = targets
     }
 
     private func socketURLString(for config: ConnectionConfig) -> String {
@@ -633,10 +785,12 @@ final class AppModel: ObservableObject {
 
 enum AppModelError: Error, LocalizedError {
     case noActiveConnection
+    case connectionNotFound
 
     var errorDescription: String? {
         switch self {
         case .noActiveConnection: return "No active connection available."
+        case .connectionNotFound: return "Saved connection not found."
         }
     }
 }
@@ -667,6 +821,7 @@ extension AppModel {
             userDefaults: previewDefaults,
             secretStore: previewSecretStore
         )
+        let conversationSnapshotStore = ConversationSnapshotStore(userDefaults: previewDefaults)
         let connectionsViewModel = ConnectionsViewModel(savedConnections: AppPreviewFixtures.savedConnections.connections)
         _ = connectionsViewModel.selectSavedConnection(id: AppPreviewFixtures.savedConnections.selectedConnectionID)
 
@@ -683,11 +838,14 @@ extension AppModel {
             diagnosticsStore: diagnosticsStore,
             diagnosticsViewModel: diagnosticsViewModel,
             savedConnectionStore: savedConnectionStore,
+            conversationSnapshotStore: conversationSnapshotStore,
             stubSender: InMemoryPhoneMessageSender(),
             connectionsViewModel: connectionsViewModel,
+            pendingSessionCoordinator: PendingSessionCoordinator(),
             currentConnectionSummary: AppPreviewFixtures.currentConnectionSummary,
             latestErrorMessage: nil,
-            persistsSavedConnections: false
+            persistsSavedConnections: false,
+            persistsConversationState: false
         )
         // Seed session→connection mapping and slot states for preview
         model.seedPreviewMappings(
@@ -709,6 +867,9 @@ extension AppModel {
             sessionToSlotID[sessionID] = slotID
         }
         self.slotStates = slotStates
+        currentConnectionSummary = slotStates.values.first(where: {
+            $0.lowercased().contains("connected") && !$0.lowercased().contains("disconnected")
+        }) ?? "Disconnected"
     }
 }
 

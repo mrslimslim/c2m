@@ -18,12 +18,14 @@ import { CodexAdapter } from "./adapters/codex.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { LocalTransport } from "./transport/local.js";
 import { displayQRCode } from "./pairing/qrcode.js";
+import { loadOrCreatePairingMaterial } from "./pairing/state.js";
 import { log } from "./utils/logger.js";
 
 export interface BridgeOptions {
   agent: "codex" | "claude" | "auto";
   port: number;
   host?: string;
+  advertisedHost?: string;
   workDir: string;
   tunnel?: boolean;
   relay?: boolean;
@@ -52,22 +54,28 @@ export class Bridge {
 
   constructor(options: BridgeOptions) {
     this.options = options;
-
-    if (options.relay) {
-      // Lazy-import RelayTransport to avoid mandatory dependency
-      // Will be set in start() after dynamic import
-      this.transport = null as unknown as TransportServer;
-    } else {
-      this.transport = new LocalTransport(options.port, options.host ?? "0.0.0.0");
-    }
+    this.transport = null as unknown as TransportServer;
   }
 
   async start(): Promise<void> {
+    const pairingMaterial = await loadOrCreatePairingMaterial({
+      workDir: this.options.workDir,
+    });
+    log.info(`Pairing state: ${pairingMaterial.statePath}`);
+
     // 0. If relay mode, create RelayTransport
     if (this.options.relay) {
       const { RelayTransport } = await import("./transport/relay.js");
       this.transport = new RelayTransport(
         this.options.relayUrl ?? "wss://relay.codepilot.dev",
+        { pairingMaterial },
+      );
+    } else {
+      this.transport = new LocalTransport(
+        this.options.port,
+        this.options.host ?? "0.0.0.0",
+        this.options.advertisedHost,
+        pairingMaterial,
       );
     }
 
@@ -76,8 +84,8 @@ export class Bridge {
     log.success(`Agent: ${this.adapter.name}`);
 
     // 2. Start transport (interface-only, no cast)
-    const { url, httpUrl, pairingData } = await this.transport.start();
-    log.success(`WebSocket server listening on ${url}`);
+    const { url, httpUrl, pairingData, listenUrl } = await this.transport.start();
+    log.success(`WebSocket server listening on ${listenUrl ?? url}`);
 
     // 3. Display QR code
     if (this.options.tunnel) {

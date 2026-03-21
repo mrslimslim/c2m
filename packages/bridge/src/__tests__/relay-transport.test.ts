@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import type { PhoneMessage } from "@codepilot/protocol";
 import {
   decrypt,
@@ -9,6 +12,7 @@ import {
   generateKeyPair,
 } from "../pairing/crypto.js";
 import { RelayTransport } from "../transport/relay.js";
+import { loadOrCreatePairingMaterial } from "../pairing/state.js";
 
 class FakeWebSocket extends EventEmitter {
   static CONNECTING: 0 = 0;
@@ -58,6 +62,45 @@ test("stop() prevents relay reconnect scheduling", async () => {
   ws.emit("close");
 
   assert.equal((transport as any).reconnectAttempts, 0, "should not schedule reconnect when explicitly stopped");
+});
+
+test("relay transport reuses persisted pairing material across restarts", async () => {
+  FakeWebSocket.instances.length = 0;
+  const root = await mkdtemp(join(tmpdir(), "codepilot-relay-pairing-"));
+  const filePath = join(root, "pairing.json");
+
+  try {
+    const firstMaterial = await loadOrCreatePairingMaterial({ filePath });
+    const firstTransport = new RelayTransport("wss://relay", {
+      WebSocketCtor: FakeWebSocket,
+      pairingMaterial: firstMaterial,
+    });
+
+    const firstStart = firstTransport.start();
+    const firstSocket = await waitForInstance();
+    firstSocket.emit("open");
+    const first = await firstStart;
+
+    const secondMaterial = await loadOrCreatePairingMaterial({ filePath });
+    const secondTransport = new RelayTransport("wss://relay", {
+      WebSocketCtor: FakeWebSocket,
+      pairingMaterial: secondMaterial,
+    });
+
+    const secondStart = secondTransport.start();
+    const secondSocket = await waitForInstance();
+    secondSocket.emit("open");
+    const second = await secondStart;
+
+    assert.equal(second.pairingData.bridge_pubkey, first.pairingData.bridge_pubkey);
+    assert.equal(second.pairingData.otp, first.pairingData.otp);
+    assert.equal(second.pairingData.channel, first.pairingData.channel);
+
+    firstTransport.stop();
+    secondTransport.stop();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("relay handshake enables encrypted messaging and authenticated lifecycle", async () => {

@@ -1,5 +1,6 @@
 import SwiftUI
 import CodePilotCore
+import CodePilotFeatures
 import CodePilotProtocol
 
 /// Wrapper to avoid NavigationDestination type collisions
@@ -14,6 +15,7 @@ struct ProjectDetailView: View {
     let connectionID: String
 
     @State private var showNewSession = false
+    @State private var showRepairSheet = false
     @State private var navigateToSession: SessionDestination?
 
     private var saved: SavedConnection? {
@@ -34,6 +36,16 @@ struct ProjectDetailView: View {
 
     private var sessions: [SessionInfo] {
         appModel.sessionsForConnection(connectionID)
+    }
+
+    private var recoveryGuidance: ConnectionRecoveryGuidance? {
+        guard let saved, slotState.lowercased().contains("failed") else {
+            return nil
+        }
+        return ConnectionRecoveryAdvisor.guidance(
+            for: saved.config,
+            failureSummary: slotState
+        )
     }
 
     var body: some View {
@@ -103,12 +115,17 @@ struct ProjectDetailView: View {
             if !isConnected && !isConnecting {
                 appModel.connectSavedConnection(id: connectionID)
             }
-        }
-        .onChange(of: sessions.count) { oldCount, newCount in
-            // Auto-navigate to newly created session
-            if newCount > oldCount, let newest = sessions.last {
-                navigateToSession = SessionDestination(sessionID: newest.id)
+            if let target = appModel.sessionNavigationTarget(for: connectionID) {
+                navigateToSession = SessionDestination(sessionID: target)
+                appModel.consumeSessionNavigationTarget(for: connectionID)
             }
+        }
+        .onChange(of: appModel.sessionNavigationTarget(for: connectionID)) { _, newTarget in
+            guard let newTarget else {
+                return
+            }
+            navigateToSession = SessionDestination(sessionID: newTarget)
+            appModel.consumeSessionNavigationTarget(for: connectionID)
         }
         .navigationDestination(item: $navigateToSession) { dest in
             SessionDetailView(sessionID: dest.sessionID)
@@ -118,6 +135,14 @@ struct ProjectDetailView: View {
         }
         .sheet(isPresented: $showNewSession) {
             NewSessionSheet(connectionID: connectionID)
+        }
+        .sheet(isPresented: $showRepairSheet) {
+            if let saved {
+                RepairConnectionSheet(
+                    connectionID: connectionID,
+                    projectName: saved.name
+                )
+            }
         }
     }
 
@@ -187,6 +212,25 @@ struct ProjectDetailView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 40)
                 }
+
+                if let recoveryGuidance {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(recoveryGuidance.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(recoveryGuidance.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 300, alignment: .leading)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(CPTheme.divider, lineWidth: 0.5)
+                    )
+                    .padding(.top, 6)
+                }
             }
 
             Button {
@@ -199,6 +243,18 @@ struct ProjectDetailView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(CPTheme.accent)
+
+            if let recoveryGuidance {
+                Button {
+                    showRepairSheet = true
+                } label: {
+                    Label(recoveryGuidance.actionLabel, systemImage: "qrcode.viewfinder")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                }
+                .buttonStyle(.bordered)
+            }
 
             Spacer()
             Spacer()
@@ -530,6 +586,124 @@ private struct NewSessionSheet: View {
             dismiss()
         } catch {
             errorMessage = "Failed to send command: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Repair Connection Sheet
+
+private struct RepairConnectionSheet: View {
+    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let connectionID: String
+    let projectName: String
+
+    @State private var payloadInput: String = ""
+    @State private var errorText: String?
+    @State private var isShowingScanner = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    VStack(spacing: 10) {
+                        ZStack {
+                            Circle()
+                                .fill(CPTheme.accentMuted)
+                                .frame(width: 72, height: 72)
+
+                            Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                                .font(.system(size: 28, weight: .light))
+                                .foregroundStyle(CPTheme.accent)
+                        }
+
+                        Text("Update Pairing")
+                            .font(.title3.weight(.bold))
+
+                        Text("Refresh the saved connection for \(projectName) by scanning the latest QR code or pasting a new pairing payload.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 16)
+
+                    Button {
+                        isShowingScanner = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "camera.viewfinder")
+                                .font(.system(size: 18, weight: .medium))
+                            Text("Scan New QR Code")
+                                .font(.body.weight(.semibold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(CPTheme.accent)
+
+                    VStack(spacing: 10) {
+                        TextField("codepilot://pair?...", text: $payloadInput, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.system(.subheadline, design: .monospaced))
+                            .lineLimit(3...6)
+                            .padding(12)
+                            .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        if let errorText {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.caption)
+                                Text(errorText)
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(CPTheme.error)
+                        }
+
+                        Button {
+                            updateConnection(from: payloadInput)
+                        } label: {
+                            Label("Apply New Pairing", systemImage: "bolt.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(CPTheme.accent)
+                        .disabled(payloadInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 32)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .sheet(isPresented: $isShowingScanner) {
+                QRScannerView { scannedPayload in
+                    payloadInput = scannedPayload
+                    updateConnection(from: scannedPayload)
+                    isShowingScanner = false
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func updateConnection(from payload: String) {
+        do {
+            try appModel.updateSavedConnection(id: connectionID, payload: payload)
+            errorText = nil
+            dismiss()
+        } catch {
+            errorText = "Could not update saved pairing."
         }
     }
 }

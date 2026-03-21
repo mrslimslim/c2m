@@ -304,3 +304,15 @@ Expected: all package tests pass, the app builds, and the repo contains a repeat
 git add packages/ios/CodePilotApp packages/ios/CodePilotKit docs/ios-testing.md
 git commit -m "feat: harden iOS client for TestFlight"
 ```
+
+### Deferred Follow-up TODO: Stable self-use pairing
+
+**Goal:** Make pairing durable enough that a self-use iPhone client can save one connection and keep using it across routine bridge restarts without depending on Relay.
+
+**Why deferred:** this is productively separate from the current iOS client build-out, and VPN-based approaches such as Tailscale should remain optional because they may conflict with existing macOS proxy setups like Clash.
+
+**Desired outcomes:**
+- Persist bridge identity and pairing material where safe so restart churn does not invalidate saved connections by default.
+- Add a bridge-side advertised host override so QR payloads can embed a stable reachable address rather than whatever LAN IP was auto-detected at launch.
+- Keep LAN as the primary baseline and treat Tailscale as an advanced network option instead of a required dependency.
+- Add regression coverage for saved pairing restore and restart compatibility once the bridge-side contract is defined.

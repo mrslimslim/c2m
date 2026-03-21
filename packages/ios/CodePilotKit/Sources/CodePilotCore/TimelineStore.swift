@@ -1,6 +1,19 @@
 import Foundation
 import CodePilotProtocol
 
+public struct TimelineStoreSnapshot: Codable, Equatable, Sendable {
+    public let sessionTimelines: [String: [TimelineItem]]
+    public let transportTimeline: [TimelineItem]
+
+    public init(
+        sessionTimelines: [String: [TimelineItem]],
+        transportTimeline: [TimelineItem]
+    ) {
+        self.sessionTimelines = sessionTimelines
+        self.transportTimeline = transportTimeline
+    }
+}
+
 public final class TimelineStore {
     private let lock = NSLock()
     private var sessionTimelines: [String: [TimelineItem]] = [:]
@@ -83,10 +96,38 @@ public final class TimelineStore {
         sessionTimelines[newSessionId, default: []].append(contentsOf: previous)
     }
 
+    public func resetSessionTimelines() {
+        lock.lock()
+        defer { lock.unlock() }
+        sessionTimelines.removeAll()
+    }
+
+    public func snapshot() -> TimelineStoreSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return .init(
+            sessionTimelines: sessionTimelines,
+            transportTimeline: transportTimelineStorage
+        )
+    }
+
+    public func restore(from snapshot: TimelineStoreSnapshot) {
+        lock.lock()
+        defer { lock.unlock() }
+        sessionTimelines = snapshot.sessionTimelines
+        transportTimelineStorage = snapshot.transportTimeline
+    }
+
     private func appendSessionItem(_ item: TimelineItem, sessionId: String) {
         lock.lock()
         defer { lock.unlock() }
-        sessionTimelines[sessionId, default: []].append(item)
+        var items = sessionTimelines[sessionId, default: []]
+        if let insertIndex = items.firstIndex(where: { $0.timestamp > item.timestamp }) {
+            items.insert(item, at: insertIndex)
+        } else {
+            items.append(item)
+        }
+        sessionTimelines[sessionId] = items
     }
 
     private static func nowMillis() -> Int {

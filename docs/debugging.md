@@ -81,6 +81,7 @@ node packages/bridge/dist/bin/codepilot.js [options]
 Options:
   -a, --agent <type>      代理类型: codex | claude | auto (默认: auto)
   -p, --port <number>     WebSocket 端口 (默认: 19260)
+  --advertised-host <address>  覆盖 QR / pairing 输出中的主机地址
   -d, --dir <path>        工作目录 (默认: 当前目录)
   --relay                 启用 Relay 跨网络模式
   --relay-url <url>       自定义 Relay 服务器地址
@@ -96,6 +97,9 @@ node packages/bridge/dist/bin/codepilot.js --agent claude --dir ~/my-project
 
 # 自定义端口
 node packages/bridge/dist/bin/codepilot.js --port 8080
+
+# 使用固定可达主机名生成 QR / pairing 信息
+node packages/bridge/dist/bin/codepilot.js --advertised-host codepilot.tailnet.ts.net
 
 # 通过 Relay 跨网络
 node packages/bridge/dist/bin/codepilot.js --relay
@@ -117,6 +121,7 @@ node packages/bridge/dist/bin/codepilot.js --relay-url ws://localhost:8787
 [codepilot] Working directory: /Users/you/project
 [codepilot] Agent: claude
 [codepilot] Mode: LAN (port 19260)
+[codepilot] Pairing state: /Users/you/.codepilot/pairing/abcd1234ef567890.json
 
 ✓ Agent: claude
 ✓ WebSocket server listening on ws://192.168.1.100:19260
@@ -135,6 +140,7 @@ node packages/bridge/dist/bin/codepilot.js --relay-url ws://localhost:8787
 关键信息：
 - **QR 码**：手机扫码连接，内含 host、port、pubkey、otp
 - **Token**：Legacy 模式的认证令牌
+- **Pairing state**：bridge 会按工作目录持久化 pairing material，重启同一项目时默认复用
 - **测试客户端 URL**：浏览器打开即可调试，所有参数已自动拼接
 
 ---
@@ -344,7 +350,7 @@ node packages/bridge/dist/bin/codepilot.js --port 19261
 ### Q: QR 码显示的 IP 不对（显示公网 IP 或 VPN IP）
 
 **原因**：`getLocalIp()` 取了非预期的网络接口。
-**解决**：使用测试客户端时手动填写正确的局域网 IP，或直接用 `localhost`。
+**解决**：优先使用 `--advertised-host <address>` 指定手机实际应连接的稳定地址；临时调试时也可以在测试客户端里手动改成正确的局域网 IP。
 
 ---
 

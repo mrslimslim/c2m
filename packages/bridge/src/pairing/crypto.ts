@@ -43,6 +43,9 @@ export interface EncryptedMessage {
   tag: string;     // 16 bytes, base64 (GCM auth tag)
 }
 
+const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
+const X25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex");
+
 // ─── Key Generation ───────────────────────────────────────────────────
 
 /**
@@ -50,14 +53,44 @@ export interface EncryptedMessage {
  */
 export function generateKeyPair(): E2EKeyPair {
   const { publicKey, privateKey } = generateKeyPairSync("x25519");
+  return {
+    publicKey,
+    privateKey,
+    publicKeyBase64: exportPublicKeyBase64(publicKey),
+  };
+}
 
-  // Export public key as raw 32 bytes for sharing
+export function exportPublicKeyBase64(publicKey: KeyObject): string {
   const pubRaw = publicKey.export({ type: "spki", format: "der" });
-  // X25519 SPKI DER has a 12-byte header; raw key is the last 32 bytes
   const pubKeyBytes = pubRaw.subarray(pubRaw.length - 32);
-  const publicKeyBase64 = pubKeyBytes.toString("base64");
+  return pubKeyBytes.toString("base64");
+}
 
-  return { publicKey, privateKey, publicKeyBase64 };
+export function exportPrivateKeyBase64(privateKey: KeyObject): string {
+  const privateRaw = privateKey.export({ type: "pkcs8", format: "der" });
+  const privateKeyBytes = privateRaw.subarray(privateRaw.length - 32);
+  return privateKeyBytes.toString("base64");
+}
+
+export function restoreKeyPairFromPrivateKeyBase64(privateKeyBase64: string): E2EKeyPair {
+  const privateRawBytes = Buffer.from(privateKeyBase64, "base64");
+  if (privateRawBytes.length !== 32) {
+    throw new Error("Invalid private key length");
+  }
+
+  const pkcs8Der = Buffer.concat([X25519_PKCS8_PREFIX, privateRawBytes]);
+  const privateKey = createPrivateKey({
+    key: pkcs8Der,
+    format: "der",
+    type: "pkcs8",
+  });
+  const publicKey = createPublicKey(privateKey);
+
+  return {
+    publicKey,
+    privateKey,
+    publicKeyBase64: exportPublicKeyBase64(publicKey),
+  };
 }
 
 // ─── Key Derivation ───────────────────────────────────────────────────
@@ -79,8 +112,7 @@ export function deriveSessionKey(
 
   // Wrap raw X25519 public key bytes in SPKI DER format
   // X25519 SPKI DER prefix (12 bytes) + 32 bytes raw key = 44 bytes
-  const spkiPrefix = Buffer.from("302a300506032b656e032100", "hex");
-  const spkiDer = Buffer.concat([spkiPrefix, theirRawBytes]);
+  const spkiDer = Buffer.concat([X25519_SPKI_PREFIX, theirRawBytes]);
 
   const theirPublicKey = createPublicKey({
     key: spkiDer,
@@ -112,20 +144,8 @@ export function deriveSessionKeyFromRaw(
   theirPublicKeyBase64: string,
   otp: string,
 ): E2ESession {
-  const myRawBytes = Buffer.from(myPrivateKeyBase64, "base64");
-
-  // Wrap in PKCS8 DER format for X25519
-  // PKCS8 prefix for X25519 (16 bytes) + 32 bytes raw key
-  const pkcs8Prefix = Buffer.from("302e020100300506032b656e04220420", "hex");
-  const pkcs8Der = Buffer.concat([pkcs8Prefix, myRawBytes]);
-
-  const myPrivateKey = createPrivateKey({
-    key: pkcs8Der,
-    format: "der",
-    type: "pkcs8",
-  });
-
-  return deriveSessionKey(myPrivateKey, theirPublicKeyBase64, otp);
+  const keyPair = restoreKeyPairFromPrivateKeyBase64(myPrivateKeyBase64);
+  return deriveSessionKey(keyPair.privateKey, theirPublicKeyBase64, otp);
 }
 
 // ─── Encryption / Decryption ──────────────────────────────────────────

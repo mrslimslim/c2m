@@ -8,6 +8,7 @@
  *   npx codepilot --agent codex       # use Codex
  *   npx codepilot --agent claude      # use Claude Code
  *   npx codepilot --port 19260        # custom port
+ *   npx codepilot --advertised-host codepilot.tailnet.ts.net  # stable pairing host
  *   npx codepilot --dir /path/to/proj # project directory
  *   npx codepilot --tunnel            # expose via Cloudflare Tunnel
  *   npx codepilot --relay             # use Relay (cross-network)
@@ -28,6 +29,7 @@ program
   .option("-a, --agent <type>", "Agent type: codex | claude | auto", "auto")
   .option("-p, --port <number>", "WebSocket port", "19260")
   .option("-H, --host <address>", "Bind address (use :: for IPv6 dual-stack)", "0.0.0.0")
+  .option("--advertised-host <address>", "Override the host embedded in QR/pairing output")
   .option("-d, --dir <path>", "Working directory", ".")
   .option("--tunnel", "Expose via Cloudflare Tunnel (requires cloudflared)")
   .option("--relay", "Use Relay server for cross-network connections")
@@ -37,6 +39,7 @@ program
       agent: string;
       port: string;
       host: string;
+      advertisedHost?: string;
       dir: string;
       tunnel?: boolean;
       relay?: boolean;
@@ -45,6 +48,7 @@ program
       const agent = opts.agent as "codex" | "claude" | "auto";
       const port = parseInt(opts.port, 10);
       const host = opts.host;
+      const advertisedHost = opts.advertisedHost;
       const workDir = resolve(opts.dir);
       const relay = opts.relay || !!opts.relayUrl;
 
@@ -66,6 +70,9 @@ program
         log.info(`Mode: Tunnel (Cloudflare)`);
       } else {
         log.info(`Mode: LAN (port ${port})`);
+        if (advertisedHost) {
+          log.info(`Advertised host: ${advertisedHost}`);
+        }
       }
       console.log();
 
@@ -74,6 +81,7 @@ program
           agent,
           port,
           host,
+          advertisedHost,
           workDir,
           tunnel: opts.tunnel,
           relay,

@@ -1,6 +1,25 @@
 import Foundation
 import CodePilotProtocol
 
+public struct SessionStoreSnapshot: Codable, Equatable, Sendable {
+    public let sessions: [SessionInfo]
+    public let activeSessionId: String?
+    public let draftsBySessionId: [String: String]
+    public let idAliases: [String: String]
+
+    public init(
+        sessions: [SessionInfo],
+        activeSessionId: String?,
+        draftsBySessionId: [String: String],
+        idAliases: [String: String]
+    ) {
+        self.sessions = sessions
+        self.activeSessionId = activeSessionId
+        self.draftsBySessionId = draftsBySessionId
+        self.idAliases = idAliases
+    }
+}
+
 public struct SessionIDRemap: Equatable, Sendable {
     public let from: String
     public let to: String
@@ -56,7 +75,10 @@ public final class SessionStore {
         // Merge incoming sessions, preserving local state when it's more recent.
         // The bridge may send session_list snapshots with stale state (e.g. "thinking")
         // while the iOS client has already received a turn_completed event setting "idle".
-        var merged: [String: SessionInfo] = [:]
+        var merged = previousById
+        for remap in remaps {
+            merged.removeValue(forKey: remap.from)
+        }
         for (id, incoming) in incomingById {
             if let existing = previousById[id] ?? previousById[remaps.first(where: { $0.to == id })?.from ?? ""] {
                 // If we locally know the session is idle/error but server says busy, keep local state
@@ -137,6 +159,45 @@ public final class SessionStore {
             return
         }
         draftsBySessionId[id] = draft
+    }
+
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        storageById.removeAll()
+        idAliases.removeAll()
+        activeSessionIdStorage = nil
+        draftsBySessionId.removeAll()
+    }
+
+    public func snapshot() -> SessionStoreSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return .init(
+            sessions: storageById.values.sorted(by: sortSessions),
+            activeSessionId: activeSessionIdStorage,
+            draftsBySessionId: draftsBySessionId,
+            idAliases: idAliases
+        )
+    }
+
+    public func restore(from snapshot: SessionStoreSnapshot) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        storageById = Dictionary(uniqueKeysWithValues: snapshot.sessions.map { ($0.id, $0) })
+        draftsBySessionId = snapshot.draftsBySessionId
+        idAliases = snapshot.idAliases
+        activeSessionIdStorage = snapshot.activeSessionId
+
+        if let active = activeSessionIdStorage {
+            let resolved = resolveAliasLocked(active)
+            if let resolved, storageById[resolved] != nil {
+                activeSessionIdStorage = resolved
+            } else if storageById[active] == nil {
+                activeSessionIdStorage = nil
+            }
+        }
     }
 
     private func detectRemaps(

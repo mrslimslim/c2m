@@ -544,6 +544,7 @@ codepilot [options]
 Options:
   -a, --agent <type>      Agent type: codex | claude | auto (default: "auto")
   -p, --port <number>     WebSocket port (default: "19260")
+  --advertised-host <address>  Override the host embedded in QR/pairing output
   -d, --dir <path>        Working directory (default: ".")
   --relay                 Use Relay server for cross-network connections
   --relay-url <url>       Custom Relay server URL
