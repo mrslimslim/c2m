@@ -98,14 +98,15 @@ final class SessionRoutingTests: XCTestCase {
         let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
         router.handle(.sessionList(sessions: [session]))
 
-        router.handle(.event(sessionId: session.id, event: .status(state: .thinking, message: "working"), timestamp: 1))
-        router.handle(.event(sessionId: session.id, event: .thinking(text: "step-by-step"), timestamp: 2))
-        router.handle(.event(sessionId: session.id, event: .agentMessage(text: "done"), timestamp: 3))
-        router.handle(.event(sessionId: session.id, event: .codeChange(changes: [.init(path: "a.swift", kind: .update)]), timestamp: 4))
+        router.handle(.event(sessionId: session.id, event: .status(state: .thinking, message: "working"), eventId: 1, timestamp: 1))
+        router.handle(.event(sessionId: session.id, event: .thinking(text: "step-by-step"), eventId: 2, timestamp: 2))
+        router.handle(.event(sessionId: session.id, event: .agentMessage(text: "done"), eventId: 3, timestamp: 3))
+        router.handle(.event(sessionId: session.id, event: .codeChange(changes: [.init(path: "a.swift", kind: .update)]), eventId: 4, timestamp: 4))
         router.handle(
             .event(
                 sessionId: session.id,
                 event: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done),
+                eventId: 5,
                 timestamp: 5
             )
         )
@@ -117,10 +118,11 @@ final class SessionRoutingTests: XCTestCase {
                     filesChanged: ["a.swift"],
                     usage: .init(inputTokens: 10, outputTokens: 3, cachedInputTokens: nil)
                 ),
+                eventId: 6,
                 timestamp: 6
             )
         )
-        router.handle(.event(sessionId: session.id, event: .error(message: "session failed"), timestamp: 7))
+        router.handle(.event(sessionId: session.id, event: .error(message: "session failed"), eventId: 7, timestamp: 7))
 
         XCTAssertEqual(
             timelineStore.timeline(for: session.id).map(\.kind),
@@ -155,7 +157,7 @@ final class SessionRoutingTests: XCTestCase {
         router.handle(.sessionList(sessions: [session]))
 
         router.handle(.error(message: "bridge disconnected"))
-        router.handle(.event(sessionId: session.id, event: .error(message: "command failed"), timestamp: 10))
+        router.handle(.event(sessionId: session.id, event: .error(message: "command failed"), eventId: 10, timestamp: 10))
 
         XCTAssertEqual(timelineStore.transportTimeline.map(\.kind), [.transportError(message: "bridge disconnected")])
         XCTAssertEqual(timelineStore.timeline(for: session.id).map(\.kind), [.sessionError(message: "command failed")])

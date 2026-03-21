@@ -60,12 +60,19 @@ export interface PingMessage {
   ts: number;
 }
 
+export interface SyncSessionMessage {
+  type: "sync_session";
+  sessionId: string;
+  afterEventId: number;
+}
+
 export type PhoneMessage =
   | CommandMessage
   | CancelMessage
   | FileRequestMessage
   | ListSessionsMessage
-  | PingMessage;
+  | PingMessage
+  | SyncSessionMessage;
 
 // ─── Bridge → Phone ──────────────────────────────────────────────────
 
@@ -73,6 +80,7 @@ export interface EventMessage {
   type: "event";
   sessionId: string;
   event: AgentEvent;
+  eventId?: number;
   timestamp: number;
 }
 
@@ -98,12 +106,20 @@ export interface ErrorResponseMessage {
   message: string;
 }
 
+export interface SessionSyncCompleteMessage {
+  type: "session_sync_complete";
+  sessionId: string;
+  latestEventId: number;
+  resolvedSessionId?: string;
+}
+
 export type BridgeMessage =
   | EventMessage
   | SessionListMessage
   | FileContentMessage
   | PongMessage
-  | ErrorResponseMessage;
+  | ErrorResponseMessage
+  | SessionSyncCompleteMessage;
 
 // ─── E2E Encrypted Wire Format ───────────────────────────────────────
 

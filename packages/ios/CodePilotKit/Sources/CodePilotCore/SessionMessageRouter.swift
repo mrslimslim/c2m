@@ -30,7 +30,7 @@ public final class SessionMessageRouter {
             }
             diagnostics.recordInfo("session_list:\(sessions.count)")
 
-        case let .event(sessionId, event, timestamp):
+        case let .event(sessionId, event, _, timestamp):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             timelineStore.appendBridgeEvent(sessionId: targetSessionId, event: event, timestamp: timestamp)
             applySessionState(event: event, sessionId: targetSessionId)
@@ -51,6 +51,9 @@ public final class SessionMessageRouter {
         case let .error(message):
             timelineStore.appendTransportError(message)
             diagnostics.recordError(message)
+
+        case .sessionSyncComplete:
+            break
         }
     }
 

@@ -40,11 +40,12 @@ public struct HandshakeOkMessage: Codable, Equatable, Sendable {
 }
 
 public enum BridgeMessage: Codable, Equatable, Sendable {
-    case event(sessionId: String, event: AgentEvent, timestamp: Int)
+    case event(sessionId: String, event: AgentEvent, eventId: Int, timestamp: Int)
     case sessionList(sessions: [SessionInfo])
     case fileContent(path: String, content: String, language: String)
     case pong(latencyMs: Int)
     case error(message: String)
+    case sessionSyncComplete(sessionId: String, latestEventId: Int, resolvedSessionId: String?)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -52,6 +53,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case clientId
         case sessionId
         case event
+        case eventId
         case timestamp
         case sessions
         case path
@@ -59,6 +61,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case language
         case latencyMs
         case message
+        case latestEventId
+        case resolvedSessionId
     }
 
     enum MessageType: String, Codable {
@@ -67,6 +71,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case fileContent = "file_content"
         case pong
         case error
+        case sessionSyncComplete = "session_sync_complete"
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +83,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .event(
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 event: try container.decode(AgentEvent.self, forKey: .event),
+                eventId: try container.decode(Int.self, forKey: .eventId),
                 timestamp: try container.decode(Int.self, forKey: .timestamp)
             )
         case .sessionList:
@@ -92,6 +98,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .pong(latencyMs: try container.decode(Int.self, forKey: .latencyMs))
         case .error:
             self = .error(message: try container.decode(String.self, forKey: .message))
+        case .sessionSyncComplete:
+            self = .sessionSyncComplete(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                latestEventId: try container.decode(Int.self, forKey: .latestEventId),
+                resolvedSessionId: try container.decodeIfPresent(String.self, forKey: .resolvedSessionId)
+            )
         }
     }
 
@@ -99,10 +111,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
 
         switch self {
-        case let .event(sessionId, event, timestamp):
+        case let .event(sessionId, event, eventId, timestamp):
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
             try container.encode(event, forKey: .event)
+            try container.encode(eventId, forKey: .eventId)
             try container.encode(timestamp, forKey: .timestamp)
         case let .sessionList(sessions):
             try container.encode(MessageType.sessionList, forKey: .type)
@@ -118,6 +131,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case let .error(message):
             try container.encode(MessageType.error, forKey: .type)
             try container.encode(message, forKey: .message)
+        case let .sessionSyncComplete(sessionId, latestEventId, resolvedSessionId):
+            try container.encode(MessageType.sessionSyncComplete, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(latestEventId, forKey: .latestEventId)
+            try container.encodeIfPresent(resolvedSessionId, forKey: .resolvedSessionId)
         }
     }
 }

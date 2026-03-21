@@ -66,6 +66,7 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
     case fileRequest(path: String, sessionId: String)
     case listSessions
     case ping(ts: Int)
+    case syncSession(sessionId: String, afterEventId: Int)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -74,6 +75,7 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case path
         case ts
         case config
+        case afterEventId
     }
 
     enum MessageType: String, Codable {
@@ -82,6 +84,7 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case fileRequest = "file_req"
         case listSessions = "list_sessions"
         case ping
+        case syncSession = "sync_session"
     }
 
     public init(from decoder: Decoder) throws {
@@ -106,6 +109,11 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
             self = .listSessions
         case .ping:
             self = .ping(ts: try container.decode(Int.self, forKey: .ts))
+        case .syncSession:
+            self = .syncSession(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                afterEventId: try container.decode(Int.self, forKey: .afterEventId)
+            )
         }
     }
 
@@ -132,6 +140,10 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case let .ping(ts):
             try container.encode(MessageType.ping, forKey: .type)
             try container.encode(ts, forKey: .ts)
+        case let .syncSession(sessionId, afterEventId):
+            try container.encode(MessageType.syncSession, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(afterEventId, forKey: .afterEventId)
         }
     }
 }

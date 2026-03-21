@@ -63,6 +63,11 @@ final class ProtocolModelTests: XCTestCase {
             json: #"{"type":"ping","ts":1700000000}"#,
             expected: .ping(ts: 1_700_000_000)
         )
+        try assertRoundTrip(
+            PhoneMessage.self,
+            json: #"{"type":"sync_session","sessionId":"session-1","afterEventId":42}"#,
+            expected: .syncSession(sessionId: "session-1", afterEventId: 42)
+        )
     }
 
     func testBridgeMessageRoundTripsRequiredVariants() throws {
@@ -76,10 +81,11 @@ final class ProtocolModelTests: XCTestCase {
         )
         try assertRoundTrip(
             BridgeMessage.self,
-            json: #"{"type":"event","sessionId":"session-1","event":{"type":"status","state":"thinking","message":"working"},"timestamp":1700000001}"#,
+            json: #"{"type":"event","sessionId":"session-1","event":{"type":"status","state":"thinking","message":"working"},"eventId":5,"timestamp":1700000001}"#,
             expected: .event(
                 sessionId: "session-1",
                 event: .status(state: .thinking, message: "working"),
+                eventId: 5,
                 timestamp: 1_700_000_001
             )
         )
@@ -102,6 +108,15 @@ final class ProtocolModelTests: XCTestCase {
             BridgeMessage.self,
             json: #"{"type":"error","message":"bad request"}"#,
             expected: .error(message: "bad request")
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"session_sync_complete","sessionId":"session-1","latestEventId":24,"resolvedSessionId":"session-1a"}"#,
+            expected: .sessionSyncComplete(
+                sessionId: "session-1",
+                latestEventId: 24,
+                resolvedSessionId: "session-1a"
+            )
         )
     }
 

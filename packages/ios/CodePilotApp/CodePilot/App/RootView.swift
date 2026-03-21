@@ -578,7 +578,7 @@ final class AppModel: ObservableObject {
                 applyPendingSessionResolution(resolution)
             }
 
-        case let .event(sessionId, _, _):
+        case let .event(sessionId, _, _, _):
             let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
@@ -589,7 +589,7 @@ final class AppModel: ObservableObject {
             }
             sessionToSlotID[resolvedSessionID] = slotID
 
-        case .fileContent, .pong, .error:
+        case .fileContent, .pong, .error, .sessionSyncComplete:
             break
         }
 

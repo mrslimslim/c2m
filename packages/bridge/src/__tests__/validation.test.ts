@@ -61,6 +61,16 @@ describe("validatePhoneMessage – valid messages", () => {
     assert.notEqual(result, null);
     assert.equal((result as any).type, "ping");
   });
+
+  it("accepts a valid sync_session message", () => {
+    const result = validatePhoneMessage({
+      type: "sync_session",
+      sessionId: "sess-1",
+      afterEventId: 42,
+    });
+    assert.notEqual(result, null);
+    assert.equal((result as any).type, "sync_session");
+  });
 });
 
 // ─── Missing required fields ────────────────────────────────────────────────
@@ -95,6 +105,24 @@ describe("validatePhoneMessage – missing required fields", () => {
   it("rejects ping with non-number ts", () => {
     assert.equal(
       validatePhoneMessage({ type: "ping", ts: "not-a-number" }),
+      null,
+    );
+  });
+
+  it("rejects sync_session without sessionId", () => {
+    assert.equal(
+      validatePhoneMessage({ type: "sync_session", afterEventId: 42 }),
+      null,
+    );
+  });
+
+  it("rejects sync_session with non-number afterEventId", () => {
+    assert.equal(
+      validatePhoneMessage({
+        type: "sync_session",
+        sessionId: "sess-1",
+        afterEventId: "not-a-number",
+      }),
       null,
     );
   });

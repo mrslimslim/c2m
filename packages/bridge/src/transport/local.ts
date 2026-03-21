@@ -33,6 +33,7 @@ const VALID_MESSAGE_TYPES = new Set([
   "file_req",
   "list_sessions",
   "ping",
+  "sync_session",
 ]);
 
 /**
@@ -65,6 +66,11 @@ export function validatePhoneMessage(data: unknown): PhoneMessage | null {
 
     case "ping":
       if (typeof msg.ts !== "number") return null;
+      return msg as unknown as PhoneMessage;
+
+    case "sync_session":
+      if (typeof msg.sessionId !== "string") return null;
+      if (typeof msg.afterEventId !== "number") return null;
       return msg as unknown as PhoneMessage;
 
     default:
