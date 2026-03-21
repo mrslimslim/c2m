@@ -49,6 +49,7 @@ export class Bridge {
   private adapter: AgentAdapter | null = null;
   private transport: TransportServer;
   private sessions = new Map<string, SessionInfo>();
+  private sessionAliases = new Map<string, string>();
   private options: BridgeOptions;
   private tunnelStop: (() => void) | null = null;
   private nextEventIdBySession = new Map<string, number>();
@@ -166,14 +167,17 @@ export class Bridge {
         break;
 
       case "cancel":
-        this.adapter?.cancel(message.sessionId);
-        client.send({
-          type: "event",
-          sessionId: message.sessionId,
-          event: { type: "status", state: "idle", message: "Cancelled" },
-          eventId: this.allocateEventId(message.sessionId),
-          timestamp: Date.now(),
-        });
+        {
+          const sessionId = this.resolveCanonicalSessionId(message.sessionId);
+          this.adapter?.cancel(sessionId);
+          client.send({
+            type: "event",
+            sessionId,
+            event: { type: "status", state: "idle", message: "Cancelled" },
+            eventId: this.allocateEventId(sessionId),
+            timestamp: Date.now(),
+          });
+        }
         break;
 
       case "list_sessions":
@@ -215,7 +219,7 @@ export class Bridge {
     }
 
     // Start or find session
-    let sid = sessionId;
+    let sid = sessionId ? this.resolveCanonicalSessionId(sessionId) : undefined;
     if (!sid || !this.sessions.has(sid)) {
       const opts: SessionOptions = {
         workDir: this.options.workDir,
@@ -242,6 +246,7 @@ export class Bridge {
       if (currentSession && currentSession.id !== sid) {
         const oldId = sid!;
         const newId = currentSession.id;
+        this.remapSessionAlias(oldId, newId);
         this.remapEventCounter(oldId, newId);
         this.sessions.delete(sid!);
         sid = newId;
@@ -307,6 +312,23 @@ export class Bridge {
     const newCounter = this.nextEventIdBySession.get(newSessionId) ?? 0;
     this.nextEventIdBySession.set(newSessionId, Math.max(oldCounter, newCounter));
     this.nextEventIdBySession.delete(oldSessionId);
+  }
+
+  private remapSessionAlias(oldSessionId: string, newSessionId: string): void {
+    if (oldSessionId === newSessionId) return;
+    this.sessionAliases.set(oldSessionId, newSessionId);
+  }
+
+  private resolveCanonicalSessionId(sessionId: string): string {
+    const visited = new Set<string>();
+    let current = sessionId;
+    while (true) {
+      if (visited.has(current)) return current;
+      visited.add(current);
+      const next = this.sessionAliases.get(current);
+      if (!next) return current;
+      current = next;
+    }
   }
 
   private async handleFileRequest(

@@ -10,6 +10,7 @@ class FakeAdapter implements AgentAdapter {
   executeCalls = 0;
   sessionMap = new Map<string, SessionInfo>();
   lastExecuteSessionId: string | null = null;
+  canceledSessionIds: string[] = [];
 
   async startSession(opts: SessionOptions): Promise<SessionInfo> {
     this.startSessionCalls += 1;
@@ -59,7 +60,9 @@ class FakeAdapter implements AgentAdapter {
     return session;
   }
 
-  cancel(): void {}
+  cancel(sessionId: string): void {
+    this.canceledSessionIds.push(sessionId);
+  }
 
   dispose(): void {}
 }
@@ -268,4 +271,55 @@ test("Bridge preserves eventId continuity across temp-to-real session remaps", a
   const eventMessages = sent.filter((message) => message.type === "event");
   const eventIds = eventMessages.map((message) => message.eventId);
   assert.deepEqual(eventIds, [1, 2, 3, 4]);
+});
+
+test("Bridge resolves temp session aliases for follow-up command and cancel", async () => {
+  const bridge = new Bridge({
+    agent: "codex",
+    port: 0,
+    workDir: process.cwd(),
+  });
+
+  const bridgeAny = bridge as unknown as {
+    transport: { broadcast: () => void };
+    adapter: AgentAdapter;
+    handleCommand: (client: { id: string; send: (message: unknown) => void }, text: string, sessionId?: string) => Promise<void>;
+    handleMessage: (
+      client: { id: string; send: (message: unknown) => void },
+      message: { type: "cancel"; sessionId: string }
+    ) => Promise<void>;
+  };
+
+  bridgeAny.transport = { broadcast: () => {} };
+  const adapter = new FakeAdapter();
+  bridgeAny.adapter = adapter;
+
+  const sent: Array<Record<string, unknown>> = [];
+  const client = {
+    id: "client",
+    send: (message: unknown) => {
+      if (typeof message === "object" && message !== null) {
+        sent.push(message as Record<string, unknown>);
+      }
+    },
+  };
+
+  await bridgeAny.handleCommand(client, "first command");
+  await bridgeAny.handleCommand(client, "follow-up command still using temp id", "temp-session");
+
+  assert.equal(adapter.startSessionCalls, 1);
+  assert.equal(adapter.executeCalls, 2);
+  assert.equal(adapter.lastExecuteSessionId, "real-session");
+
+  const eventMessages = sent.filter((message) => message.type === "event");
+  const eventIds = eventMessages.map((message) => message.eventId);
+  assert.deepEqual(eventIds, [1, 2]);
+
+  await bridgeAny.handleMessage(client, { type: "cancel", sessionId: "temp-session" });
+  assert.deepEqual(adapter.canceledSessionIds, ["real-session"]);
+
+  const cancelEvent = sent[sent.length - 1];
+  assert.equal(cancelEvent.type, "event");
+  assert.equal(cancelEvent.sessionId, "real-session");
+  assert.equal(cancelEvent.eventId, 3);
 });
