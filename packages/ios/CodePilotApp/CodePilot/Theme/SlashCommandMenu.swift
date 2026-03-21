@@ -281,6 +281,7 @@ struct SlashHintButton: View {
                 .frame(width: 28, height: 28)
                 .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
+        .frame(width: 40, height: 40)
         .buttonStyle(.plain)
     }
 }

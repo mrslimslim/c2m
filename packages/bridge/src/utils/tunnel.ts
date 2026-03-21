@@ -52,7 +52,7 @@ export function startTunnel(localPort: number): Promise<TunnelResult> {
     }, 30000);
 
     // cloudflared prints the tunnel URL to stderr
-    const urlRegex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/;
+    const urlRegex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com\/?(?=[\s|]|$)/;
     let buffer = "";
 
     const handleData = (data: Buffer) => {
@@ -71,7 +71,7 @@ export function startTunnel(localPort: number): Promise<TunnelResult> {
       if (match && !settled) {
         settled = true;
         clearTimeout(timeout);
-        const httpsUrl = match[0];
+        const httpsUrl = match[0].replace(/\/$/, "");
         const wsUrl = httpsUrl.replace("https://", "wss://");
         resolve({
           url: httpsUrl,

@@ -31,6 +31,7 @@ const VALID_MESSAGE_TYPES = new Set([
   "command",
   "cancel",
   "file_req",
+  "delete_session",
   "list_sessions",
   "ping",
   "sync_session",
@@ -59,6 +60,10 @@ export function validatePhoneMessage(data: unknown): PhoneMessage | null {
 
     case "file_req":
       if (typeof msg.path !== "string" || typeof msg.sessionId !== "string") return null;
+      return msg as unknown as PhoneMessage;
+
+    case "delete_session":
+      if (typeof msg.sessionId !== "string") return null;
       return msg as unknown as PhoneMessage;
 
     case "list_sessions":

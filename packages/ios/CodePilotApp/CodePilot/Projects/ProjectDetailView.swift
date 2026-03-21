@@ -2,6 +2,9 @@ import SwiftUI
 import CodePilotCore
 import CodePilotFeatures
 import CodePilotProtocol
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Wrapper to avoid NavigationDestination type collisions
 private struct SessionDestination: Hashable {
@@ -17,6 +20,8 @@ struct ProjectDetailView: View {
     @State private var showNewSession = false
     @State private var showRepairSheet = false
     @State private var navigateToSession: SessionDestination?
+    @State private var deleteTarget: SessionInfo?
+    @State private var deleteErrorMessage: String?
 
     private var saved: SavedConnection? {
         appModel.savedConnections.first { $0.id == connectionID }
@@ -143,6 +148,35 @@ struct ProjectDetailView: View {
                     projectName: saved.name
                 )
             }
+        }
+        .alert(
+            deleteTitle,
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            )
+        ) {
+            Button("Delete", role: .destructive) {
+                if let deleteTarget {
+                    deleteSession(deleteTarget)
+                }
+                self.deleteTarget = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deleteTarget = nil
+            }
+        } message: {
+            Text(deleteMessage)
+        }
+        .alert("Error", isPresented: Binding(
+            get: { deleteErrorMessage != nil },
+            set: { if !$0 { deleteErrorMessage = nil } }
+        )) {
+            Button("OK") {
+                deleteErrorMessage = nil
+            }
+        } message: {
+            Text(deleteErrorMessage ?? "")
         }
     }
 
@@ -306,24 +340,32 @@ struct ProjectDetailView: View {
     // MARK: - Sessions List
 
     private var sessionsList: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(sessions, id: \.id) { session in
-                    Button {
-                        navigateToSession = SessionDestination(sessionID: session.id)
+        List {
+            ForEach(sessions, id: \.id) { session in
+                Button {
+                    navigateToSession = SessionDestination(sessionID: session.id)
+                } label: {
+                    SessionCard(
+                        session: session,
+                        isActive: appModel.activeSessionID == session.id
+                    )
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        deleteTarget = session
                     } label: {
-                        SessionCard(
-                            session: session,
-                            isActive: appModel.activeSessionID == session.id
-                        )
+                        Label("Delete", systemImage: "trash")
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
-            .padding(.bottom, 24)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
         .refreshable {
             appModel.refreshSessionsForConnection(connectionID)
         }
@@ -343,6 +385,41 @@ struct ProjectDetailView: View {
         if isConnecting { return "Connecting..." }
         if slotState.lowercased().contains("failed") { return "Failed" }
         return "Disconnected"
+    }
+
+    private var deleteTitle: String {
+        guard let deleteTarget else {
+            return "Delete Session?"
+        }
+        return "Delete \(CPTheme.shortPath(deleteTarget.workDir))?"
+    }
+
+    private var deleteMessage: String {
+        guard let deleteTarget else {
+            return ""
+        }
+        if isBusy(deleteTarget.state) {
+            return "This session is still running. It will be stopped first, then deleted."
+        }
+        return "This session will be deleted from the bridge and removed from this project."
+    }
+
+    private func isBusy(_ state: AgentState) -> Bool {
+        switch state {
+        case .thinking, .coding, .runningCommand, .waitingApproval:
+            return true
+        case .idle, .error:
+            return false
+        }
+    }
+
+    private func deleteSession(_ session: SessionInfo) {
+        do {
+            try appModel.deleteSession(id: session.id)
+            deleteErrorMessage = nil
+        } catch {
+            deleteErrorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -532,14 +609,17 @@ private struct NewSessionSheet: View {
                 .padding(.bottom, 16)
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 24))
-                            .symbolRenderingMode(.hierarchical)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            prepareForDismiss()
+                            DispatchQueue.main.async {
+                                dismiss()
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 24))
+                                .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -583,13 +663,24 @@ private struct NewSessionSheet: View {
         let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
+        prepareForDismiss()
         do {
             let config = sessionConfig.isEmpty ? nil : sessionConfig
             try appModel.sendNewSessionCommand(text, connectionID: connectionID, config: config)
-            dismiss()
+            DispatchQueue.main.async {
+                dismiss()
+            }
         } catch {
             errorMessage = "Failed to send command: \(error.localizedDescription)"
         }
+    }
+
+    private func prepareForDismiss() {
+        isFocused = false
+        showSlashMenu = false
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 }
 

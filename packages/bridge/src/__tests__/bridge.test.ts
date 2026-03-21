@@ -133,6 +133,8 @@ class FakeAdapter implements AgentAdapter {
   readonly name = "codex" as const;
   startSessionCalls = 0;
   executeCalls = 0;
+  cancelCalls: string[] = [];
+  deleteCalls: string[] = [];
   sessionMap = new Map<string, SessionInfo>();
   lastExecuteSessionId: string | null = null;
   canceledSessionIds: string[] = [];
@@ -187,6 +189,12 @@ class FakeAdapter implements AgentAdapter {
 
   cancel(sessionId: string): void {
     this.canceledSessionIds.push(sessionId);
+    this.cancelCalls.push(sessionId);
+  }
+
+  deleteSession(sessionId: string): void {
+    this.deleteCalls.push(sessionId);
+    this.sessionMap.delete(sessionId);
   }
 
   dispose(): void {}
@@ -228,6 +236,8 @@ class MultiSessionAdapter implements AgentAdapter {
   }
 
   cancel(): void {}
+
+  deleteSession(): void {}
 
   dispose(): void {}
 }
@@ -273,6 +283,8 @@ class RemapDuringExecuteAdapter implements AgentAdapter {
   }
 
   cancel(): void {}
+
+  deleteSession(): void {}
 
   dispose(): void {}
 }
@@ -320,6 +332,8 @@ class SingleSessionAdapter implements AgentAdapter {
   }
 
   cancel(): void {}
+
+  deleteSession(): void {}
 
   dispose(): void {}
 }
@@ -379,6 +393,8 @@ class ControlledStreamingAdapter implements AgentAdapter {
   }
 
   cancel(): void {}
+
+  deleteSession(): void {}
 
   dispose(): void {}
 }
@@ -451,6 +467,8 @@ class LateRemapStreamingAdapter implements AgentAdapter {
   }
 
   cancel(): void {}
+
+  deleteSession(): void {}
 
   dispose(): void {}
 }
@@ -1142,4 +1160,59 @@ test("Bridge sends ongoing session output to a newly connected client after repl
     assert.deepEqual(statusMessages(originalClient), ["event-1"]);
     assert.deepEqual(statusMessages(reconnectClient), ["event-1", "event-2"]);
   });
+});
+
+test("Bridge delete_session cancels busy sessions before removing them", async () => {
+  const broadcasts: Array<{ type: string; sessions: SessionInfo[] }> = [];
+
+  const bridge = new Bridge({
+    agent: "codex",
+    port: 0,
+    workDir: process.cwd(),
+  });
+
+  const bridgeAny = bridge as unknown as {
+    transport: { broadcast: (message: { type: string; sessions: SessionInfo[] }) => void };
+    adapter: AgentAdapter;
+    handleMessage: (client: { id: string; send: (...args: any[]) => void }, message: { type: "delete_session"; sessionId: string }) => Promise<void>;
+    sessions: Map<string, SessionInfo>;
+  };
+
+  bridgeAny.transport = {
+    broadcast: (message) => {
+      broadcasts.push(message);
+    },
+  };
+  const adapter = new FakeAdapter();
+  bridgeAny.adapter = adapter;
+
+  const busySession: SessionInfo = {
+    id: "session-1",
+    agentType: "codex",
+    workDir: process.cwd(),
+    state: "thinking",
+    createdAt: Date.now(),
+    lastActiveAt: Date.now(),
+  };
+  adapter.sessionMap.set(busySession.id, busySession);
+  bridgeAny.sessions.set(busySession.id, busySession);
+
+  const clientMessages: Array<{ type: string; message?: string }> = [];
+  const client = {
+    id: "client",
+    send: (message: { type: string; message?: string }) => {
+      clientMessages.push(message);
+    },
+  };
+
+  await bridgeAny.handleMessage(client, {
+    type: "delete_session",
+    sessionId: busySession.id,
+  });
+
+  assert.deepEqual(adapter.cancelCalls, [busySession.id]);
+  assert.deepEqual(adapter.deleteCalls, [busySession.id]);
+  assert.equal(bridgeAny.sessions.has(busySession.id), false);
+  assert.deepEqual(broadcasts, [{ type: "session_list", sessions: [] }]);
+  assert.deepEqual(clientMessages, []);
 });

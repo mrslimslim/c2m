@@ -50,6 +50,15 @@ describe("validatePhoneMessage – valid messages", () => {
     assert.equal((result as any).type, "file_req");
   });
 
+  it("accepts a valid delete_session message", () => {
+    const result = validatePhoneMessage({
+      type: "delete_session",
+      sessionId: "sess-1",
+    });
+    assert.notEqual(result, null);
+    assert.equal((result as any).type, "delete_session");
+  });
+
   it("accepts a valid list_sessions message", () => {
     const result = validatePhoneMessage({ type: "list_sessions" });
     assert.notEqual(result, null);
@@ -96,6 +105,10 @@ describe("validatePhoneMessage – missing required fields", () => {
       validatePhoneMessage({ type: "file_req", path: "/tmp/f.txt" }),
       null,
     );
+  });
+
+  it("rejects delete_session without sessionId", () => {
+    assert.equal(validatePhoneMessage({ type: "delete_session" }), null);
   });
 
   it("rejects ping without ts", () => {

@@ -2,9 +2,13 @@ import SwiftUI
 import CodePilotCore
 import CodePilotFeatures
 import CodePilotProtocol
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct SessionDetailView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.dismiss) private var dismiss
 
     let sessionID: String
 
@@ -14,7 +18,9 @@ struct SessionDetailView: View {
     @State private var showFileRequest: Bool = false
     @State private var sessionConfig = SessionConfig()
     @State private var showSlashMenu = false
+    @State private var showDeleteConfirmation = false
     @FocusState private var isComposerFocused: Bool
+    @FocusState private var isFileRequestFocused: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -83,12 +89,27 @@ struct SessionDetailView: View {
             }
 
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showFileRequest.toggle()
-                } label: {
-                    Image(systemName: "doc.badge.plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Button {
+                        prepareForModalTransition {
+                            showDeleteConfirmation = true
+                        }
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(CPTheme.error)
+                    }
+                    .disabled(session == nil)
+
+                    Button {
+                        prepareForModalTransition {
+                            showFileRequest = true
+                        }
+                    } label: {
+                        Image(systemName: "doc.badge.plus")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -120,6 +141,14 @@ struct SessionDetailView: View {
         }
         .sheet(isPresented: $showFileRequest) {
             fileRequestSheet
+        }
+        .alert("Delete Session?", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) {
+                deleteSession()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deleteConfirmationMessage)
         }
     }
 
@@ -224,12 +253,13 @@ struct SessionDetailView: View {
             // Config chips
             if !sessionConfig.isEmpty {
                 ConfigChips(config: $sessionConfig)
+                    .padding(.top, 6)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 8)
             }
 
             // Input row
-            HStack(alignment: .bottom, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 // Cancel button (only when agent is busy)
                 if let session = session, isBusy(session.state) {
                     Button {
@@ -239,6 +269,7 @@ struct SessionDetailView: View {
                             .font(.system(size: 28))
                             .foregroundStyle(CPTheme.error)
                     }
+                    .frame(width: 40, height: 40)
                 }
 
                 // Slash hint (hidden when agent is busy or slash menu is open)
@@ -250,31 +281,37 @@ struct SessionDetailView: View {
                 }
 
                 // Text field
-                TextField("Send a command...", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.subheadline)
-                    .lineLimit(1...5)
-                    .focused($isComposerFocused)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .onChange(of: draft) { _, newValue in
-                        withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                            showSlashMenu = newValue.hasPrefix("/")
-                        }
-                    }
-                    .toolbar {
-                        ToolbarItemGroup(placement: .keyboard) {
-                            Spacer()
-                            Button {
-                                isComposerFocused = false
-                            } label: {
-                                Image(systemName: "keyboard.chevron.compact.down")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    TextField("Send a command...", text: $draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.subheadline)
+                        .lineLimit(1...5)
+                        .focused($isComposerFocused)
+                        .layoutPriority(1)
+                        .onChange(of: draft) { _, newValue in
+                            withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
+                                showSlashMenu = newValue.hasPrefix("/")
                             }
                         }
+
+                    if isComposerFocused {
+                        Button {
+                            dismissComposerKeyboard()
+                        } label: {
+                            Image(systemName: "keyboard.chevron.compact.down")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: 28, height: 28)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
+                }
+                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .animation(.easeOut(duration: 0.18), value: isComposerFocused)
 
                 // Send button
                 Button {
@@ -288,6 +325,7 @@ struct SessionDetailView: View {
                                 : CPTheme.accent
                         )
                 }
+                .frame(width: 40, height: 40)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 12)
@@ -320,6 +358,7 @@ struct SessionDetailView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.subheadline, design: .monospaced))
+                    .focused($isFileRequestFocused)
                     .padding(12)
                     .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .padding(.horizontal)
@@ -329,13 +368,13 @@ struct SessionDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showFileRequest = false }
+                    Button("Cancel") { closeFileRequestSheet() }
                         .foregroundStyle(.secondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Request") {
                         requestFile()
-                        showFileRequest = false
+                        closeFileRequestSheet()
                     }
                     .fontWeight(.semibold)
                     .tint(CPTheme.accent)
@@ -345,6 +384,11 @@ struct SessionDetailView: View {
         }
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+        .onAppear {
+            DispatchQueue.main.async {
+                isFileRequestFocused = true
+            }
+        }
     }
 
     // MARK: - Computed Properties
@@ -417,6 +461,60 @@ struct SessionDetailView: View {
         } catch {
             errorMessage = "Failed to request file."
         }
+    }
+
+    private var deleteConfirmationMessage: String {
+        guard let session else {
+            return "This session will be deleted."
+        }
+        if isBusy(session.state) {
+            return "This session is still running. It will be stopped first, then deleted."
+        }
+        return "This session will be deleted from the bridge."
+    }
+
+    private func deleteSession() {
+        prepareForModalTransition()
+        do {
+            try appModel.deleteSession(id: sessionID)
+            errorMessage = nil
+            DispatchQueue.main.async {
+                dismiss()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func closeFileRequestSheet() {
+        isFileRequestFocused = false
+        resignActiveTextInput()
+        DispatchQueue.main.async {
+            showFileRequest = false
+        }
+    }
+
+    private func dismissComposerKeyboard() {
+        isComposerFocused = false
+        resignActiveTextInput()
+    }
+
+    private func prepareForModalTransition(_ action: (() -> Void)? = nil) {
+        isComposerFocused = false
+        isFileRequestFocused = false
+        showSlashMenu = false
+        resignActiveTextInput()
+        if let action {
+            DispatchQueue.main.async {
+                action()
+            }
+        }
+    }
+
+    private func resignActiveTextInput() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 }
 

@@ -120,6 +120,21 @@ public final class FileStore {
         }
     }
 
+    public func removeSessionState(sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        fileStatesBySession[sessionId] = nil
+        for path in pendingRequestsByPath.keys {
+            guard let queue = pendingRequestsByPath[path] else {
+                continue
+            }
+
+            let filtered = queue.filter { $0 != sessionId }
+            pendingRequestsByPath[path] = filtered.isEmpty ? nil : filtered
+        }
+    }
+
     public func reset() {
         lock.lock()
         defer { lock.unlock() }

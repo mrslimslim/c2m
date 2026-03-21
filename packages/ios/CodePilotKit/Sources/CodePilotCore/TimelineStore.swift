@@ -96,6 +96,12 @@ public final class TimelineStore {
         sessionTimelines[newSessionId, default: []].append(contentsOf: previous)
     }
 
+    public func removeSessionTimeline(sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        sessionTimelines[sessionId] = nil
+    }
+
     public func resetSessionTimelines() {
         lock.lock()
         defer { lock.unlock() }
