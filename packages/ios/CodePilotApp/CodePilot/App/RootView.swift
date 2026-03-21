@@ -492,6 +492,24 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func deleteSession(id: String) throws {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: id) ?? id
+        let targetSlotID = sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[id]
+
+        guard
+            let targetSlotID,
+            let slot = slots[targetSlotID],
+            case .connected = slot.controller.state
+        else {
+            throw AppModelError.sessionConnectionUnavailable
+        }
+
+        try slot.controller.send(.deleteSession(sessionId: resolvedSessionID))
+        removeSessionLocally(resolvedSessionID, connectionID: targetSlotID)
+        latestErrorMessage = nil
+        refreshPublishedState()
+    }
+
     func sessionNavigationTarget(for connectionID: String) -> String? {
         sessionNavigationTargets[connectionID]
     }
@@ -567,6 +585,11 @@ final class AppModel: ObservableObject {
 
         switch message {
         case let .sessionList(sessions):
+            synchronizeSessionRemoval(
+                for: slotID,
+                previousSessionIDs: knownSessionIDs,
+                incomingSessions: sessions
+            )
             for session in sessions {
                 sessionToSlotID[session.id] = slotID
             }
@@ -727,6 +750,56 @@ final class AppModel: ObservableObject {
         sessionNavigationTargets = targets
     }
 
+    private func synchronizeSessionRemoval(
+        for connectionID: String,
+        previousSessionIDs: [String],
+        incomingSessions: [SessionInfo]
+    ) {
+        let incomingSessionIDs = Set(incomingSessions.map(\.id))
+        let removedSessionIDs = Set(previousSessionIDs.compactMap { previousSessionID -> String? in
+            let resolvedSessionID = sessionStore.resolvedSessionId(for: previousSessionID) ?? previousSessionID
+            return incomingSessionIDs.contains(resolvedSessionID) ? nil : resolvedSessionID
+        })
+
+        for sessionID in removedSessionIDs {
+            removeSessionLocally(sessionID, connectionID: connectionID)
+        }
+    }
+
+    private func removeSessionLocally(_ sessionID: String, connectionID: String? = nil) {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        let targetConnectionID = connectionID ?? sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[sessionID]
+        let shouldClearNavigationTarget = targetConnectionID.map { connectionID in
+            let currentTarget = sessionNavigationTargets[connectionID]
+            let resolvedTarget = sessionStore.resolvedSessionId(for: currentTarget) ?? currentTarget
+            return resolvedTarget == resolvedSessionID
+        } ?? false
+
+        var sessionIDsToClear: [String] = []
+        for (knownSessionID, mappedConnectionID) in sessionToSlotID {
+            if let targetConnectionID, mappedConnectionID != targetConnectionID {
+                continue
+            }
+
+            let resolvedKnownSessionID = sessionStore.resolvedSessionId(for: knownSessionID) ?? knownSessionID
+            if resolvedKnownSessionID == resolvedSessionID {
+                sessionIDsToClear.append(knownSessionID)
+            }
+        }
+
+        for knownSessionID in sessionIDsToClear {
+            sessionToSlotID[knownSessionID] = nil
+        }
+
+        sessionStore.removeSession(id: resolvedSessionID)
+        timelineStore.removeSessionTimeline(sessionId: resolvedSessionID)
+        fileStore.removeSessionState(sessionId: resolvedSessionID)
+
+        if shouldClearNavigationTarget, let targetConnectionID {
+            clearSessionNavigationTarget(for: targetConnectionID)
+        }
+    }
+
     private func socketURLString(for config: ConnectionConfig) -> String {
         switch config {
         case let .lan(host, port, _, _, _):
@@ -786,11 +859,13 @@ final class AppModel: ObservableObject {
 enum AppModelError: Error, LocalizedError {
     case noActiveConnection
     case connectionNotFound
+    case sessionConnectionUnavailable
 
     var errorDescription: String? {
         switch self {
         case .noActiveConnection: return "No active connection available."
         case .connectionNotFound: return "Saved connection not found."
+        case .sessionConnectionUnavailable: return "Connect to the project before deleting its sessions."
         }
     }
 }

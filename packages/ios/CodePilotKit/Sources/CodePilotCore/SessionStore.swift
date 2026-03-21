@@ -161,6 +161,25 @@ public final class SessionStore {
         draftsBySessionId[id] = draft
     }
 
+    public func removeSession(id: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let resolved = resolveAliasLocked(id) ?? id
+        storageById[resolved] = nil
+        draftsBySessionId[resolved] = nil
+        idAliases = idAliases.filter { alias, target in
+            alias != resolved && target != resolved
+        }
+
+        if let active = activeSessionIdStorage {
+            let resolvedActive = resolveAliasLocked(active) ?? active
+            if resolvedActive == resolved {
+                activeSessionIdStorage = storageById.values.sorted(by: sortSessions).first?.id
+            }
+        }
+    }
+
     public func reset() {
         lock.lock()
         defer { lock.unlock() }

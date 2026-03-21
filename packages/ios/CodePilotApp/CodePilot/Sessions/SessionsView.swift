@@ -1,5 +1,8 @@
 import SwiftUI
 import CodePilotProtocol
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct SessionsView: View {
     @EnvironmentObject private var appModel: AppModel
@@ -105,6 +108,7 @@ private struct NewSessionSheet: View {
     @State private var command: String = ""
     @State private var selectedConnectionID: String?
     @State private var errorMessage: String?
+    @FocusState private var isFocused: Bool
 
     private var connectedSlots: [(id: String, name: String)] {
         appModel.savedConnections.compactMap { saved in
@@ -150,6 +154,7 @@ private struct NewSessionSheet: View {
                 TextField("e.g. \"Explain this codebase\" or \"Fix the login bug\"", text: $command, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(2...6)
+                    .focused($isFocused)
                     .padding(12)
                     .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal)
@@ -159,7 +164,12 @@ private struct NewSessionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        prepareForDismiss()
+                        DispatchQueue.main.async {
+                            dismiss()
+                        }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") {
@@ -179,18 +189,33 @@ private struct NewSessionSheet: View {
             }
         }
         .presentationDetents([.medium])
+        .onAppear {
+            DispatchQueue.main.async {
+                isFocused = true
+            }
+        }
     }
 
     private func sendCommand() {
         let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
+        prepareForDismiss()
         do {
             try appModel.sendNewSessionCommand(text, connectionID: selectedConnectionID ?? connectedSlots.first?.id)
-            dismiss()
+            DispatchQueue.main.async {
+                dismiss()
+            }
         } catch {
             errorMessage = "Failed to send command: \(error.localizedDescription)"
         }
+    }
+
+    private func prepareForDismiss() {
+        isFocused = false
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
     }
 }
 

@@ -51,6 +51,11 @@ export interface FileRequestMessage {
   sessionId: string;
 }
 
+export interface DeleteSessionMessage {
+  type: "delete_session";
+  sessionId: string;
+}
+
 export interface ListSessionsMessage {
   type: "list_sessions";
 }
@@ -64,6 +69,7 @@ export type PhoneMessage =
   | CommandMessage
   | CancelMessage
   | FileRequestMessage
+  | DeleteSessionMessage
   | ListSessionsMessage
   | PingMessage;
 

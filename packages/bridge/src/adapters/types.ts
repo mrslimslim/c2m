@@ -45,6 +45,11 @@ export interface AgentAdapter {
   cancel(sessionId: string): void;
 
   /**
+   * Remove a session and release any resources associated with it.
+   */
+  deleteSession(sessionId: string): void;
+
+  /**
    * Dispose of all resources.
    */
   dispose(): void;

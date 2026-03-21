@@ -55,6 +55,11 @@ final class ProtocolModelTests: XCTestCase {
         )
         try assertRoundTrip(
             PhoneMessage.self,
+            json: #"{"type":"delete_session","sessionId":"session-1"}"#,
+            expected: .deleteSession(sessionId: "session-1")
+        )
+        try assertRoundTrip(
+            PhoneMessage.self,
             json: #"{"type":"list_sessions"}"#,
             expected: .listSessions
         )

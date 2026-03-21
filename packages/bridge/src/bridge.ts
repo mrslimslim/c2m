@@ -174,6 +174,10 @@ export class Bridge {
         });
         break;
 
+      case "delete_session":
+        this.handleDeleteSession(client, message.sessionId);
+        break;
+
       case "list_sessions":
         client.send({
           type: "session_list",
@@ -230,6 +234,9 @@ export class Bridge {
 
     const onEvent = (event: AgentEvent) => {
       const currentSession = this.sessions.get(sid!);
+      if (!currentSession) {
+        return;
+      }
       if (currentSession && currentSession.id !== sid) {
         const newId = currentSession.id;
         this.sessions.delete(sid!);
@@ -268,6 +275,9 @@ export class Bridge {
     try {
       await this.adapter.execute(sid, text, onEvent);
     } catch (err) {
+      if (!this.sessions.has(sid)) {
+        return;
+      }
       log.error(`Execution error: ${err}`);
       client.send({
         type: "event",
@@ -279,6 +289,28 @@ export class Bridge {
         timestamp: Date.now(),
       });
     }
+  }
+
+  private handleDeleteSession(client: TransportClient, sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      client.send({
+        type: "error",
+        message: `Session not found: ${sessionId}`,
+      });
+      return;
+    }
+
+    if (session.state !== "idle" && session.state !== "error") {
+      this.adapter?.cancel(sessionId);
+    }
+
+    this.adapter?.deleteSession(sessionId);
+    this.sessions.delete(sessionId);
+    this.transport.broadcast({
+      type: "session_list",
+      sessions: Array.from(this.sessions.values()),
+    });
   }
 
   private async handleFileRequest(

@@ -53,6 +53,56 @@ final class StoreResetTests: XCTestCase {
         XCTAssertNil(store.fileState(for: "README.md", sessionId: "session-1"))
         XCTAssertEqual(store.files(for: "session-1"), [])
     }
+
+    func testSessionStoreRemoveSessionClearsAliasesDraftsAndActiveSelection() {
+        let store = SessionStore()
+
+        let temporary = makeSession(id: "temp-session")
+        let stable = makeSession(id: "stable-session")
+        let sibling = makeSession(id: "session-2")
+
+        _ = store.applySessionList([temporary, sibling])
+        store.setActiveSession(id: temporary.id)
+        store.setDraft("continue with refactor", for: temporary.id)
+        _ = store.applySessionList([stable, sibling])
+
+        store.removeSession(id: temporary.id)
+
+        XCTAssertNil(store.session(for: temporary.id))
+        XCTAssertNil(store.session(for: stable.id))
+        XCTAssertEqual(store.draft(for: temporary.id), "")
+        XCTAssertEqual(store.draft(for: stable.id), "")
+        XCTAssertEqual(store.sessions.map(\.id), [sibling.id])
+        XCTAssertEqual(store.activeSessionId, sibling.id)
+    }
+
+    func testTimelineStoreRemoveSessionTimelineOnlyClearsTargetSession() {
+        let store = TimelineStore()
+
+        store.appendUserCommand("swift test", sessionId: "session-1", timestamp: 1)
+        store.appendUserCommand("swift build", sessionId: "session-2", timestamp: 2)
+
+        store.removeSessionTimeline(sessionId: "session-1")
+
+        XCTAssertEqual(store.timeline(for: "session-1"), [])
+        XCTAssertEqual(store.timeline(for: "session-2").map(\.kind), [.userCommand(text: "swift build")])
+    }
+
+    func testFileStoreRemoveSessionStateClearsFilesAndPendingRequests() {
+        let store = FileStore()
+
+        store.markRequested(path: "README.md", sessionId: "session-1")
+        store.markRequested(path: "README.md", sessionId: "session-2")
+        store.markRequested(path: "Sources/App.swift", sessionId: "session-1")
+
+        store.removeSessionState(sessionId: "session-1")
+        store.routeFileContent(path: "README.md", content: "session-2", language: "markdown")
+        store.routeFileContent(path: "Sources/App.swift", content: "unexpected", language: "swift", fallbackSessionId: nil)
+
+        XCTAssertEqual(store.files(for: "session-1"), [])
+        XCTAssertEqual(store.fileState(for: "README.md", sessionId: "session-2")?.content, "session-2")
+        XCTAssertNil(store.fileState(for: "Sources/App.swift", sessionId: "session-1"))
+    }
 }
 
 private extension StoreResetTests {

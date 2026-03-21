@@ -248,6 +248,20 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  deleteSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+
+    session.abortController.abort();
+    for (const [id, candidate] of this.sessions.entries()) {
+      if (candidate === session) {
+        this.sessions.delete(id);
+      }
+    }
+  }
+
   dispose(): void {
     for (const session of this.sessions.values()) {
       session.abortController.abort();
