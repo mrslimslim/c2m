@@ -3,6 +3,111 @@ import XCTest
 import CodePilotProtocol
 
 final class SessionRoutingTests: XCTestCase {
+    func testDuplicateEventIDIsIgnored() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(.event(sessionId: session.id, event: .thinking(text: "first"), eventId: 1, timestamp: 1))
+        router.handle(.event(sessionId: session.id, event: .thinking(text: "duplicate"), eventId: 1, timestamp: 2))
+
+        XCTAssertEqual(
+            timelineStore.timeline(for: session.id).map(\.kind),
+            [.thinking(text: "first")]
+        )
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: session.id), 1)
+    }
+
+    func testEventGapRequestsReplayInsteadOfAppendingOutOfOrderItem() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        var replayRequests: [(String, Int)] = []
+        router.onReplayNeeded = { sessionID, afterEventId in
+            replayRequests.append((sessionID, afterEventId))
+        }
+
+        router.handle(.event(sessionId: session.id, event: .thinking(text: "first"), eventId: 1, timestamp: 1))
+        router.handle(.event(sessionId: session.id, event: .agentMessage(text: "third"), eventId: 3, timestamp: 3))
+
+        XCTAssertEqual(
+            timelineStore.timeline(for: session.id).map(\.kind),
+            [.thinking(text: "first")]
+        )
+        XCTAssertEqual(replayRequests.map { "\($0.0):\($0.1)" }, ["session-1:1"])
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: session.id), 1)
+    }
+
+    func testSessionSyncCompleteResolvedSessionIDMigratesReplayState() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+
+        let temporarySession = makeSession(
+            id: "temp-session",
+            state: .thinking,
+            createdAt: 1_700_000_100,
+            lastActiveAt: 1_700_000_101
+        )
+        sessionStore.upsert(temporarySession)
+        sessionStore.setActiveSession(id: temporarySession.id)
+        sessionStore.setDraft("continue", for: temporarySession.id)
+        sessionStore.recordAppliedEventID(4, for: temporarySession.id)
+        timelineStore.appendUserCommand("run tests", sessionId: temporarySession.id, timestamp: 10)
+        fileStore.markRequested(path: "README.md", sessionId: temporarySession.id)
+        fileStore.routeFileContent(path: "README.md", content: "hello", language: "markdown")
+
+        router.handle(
+            .sessionSyncComplete(
+                sessionId: temporarySession.id,
+                latestEventId: 7,
+                resolvedSessionId: "stable-session"
+            )
+        )
+
+        XCTAssertEqual(sessionStore.sessions.map(\.id), ["stable-session"])
+        XCTAssertEqual(sessionStore.activeSessionId, "stable-session")
+        XCTAssertEqual(sessionStore.resolvedSessionId(for: temporarySession.id), "stable-session")
+        XCTAssertEqual(sessionStore.draft(for: "stable-session"), "continue")
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: temporarySession.id), 7)
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: "stable-session"), 7)
+        XCTAssertEqual(
+            timelineStore.timeline(for: "stable-session").map(\.kind),
+            [.userCommand(text: "run tests")]
+        )
+        XCTAssertNil(fileStore.fileState(for: "README.md", sessionId: temporarySession.id))
+        XCTAssertEqual(
+            fileStore.fileState(for: "README.md", sessionId: "stable-session")?.content,
+            "hello"
+        )
+    }
+
     func testSessionListUpdatesAndKeepsExplicitActiveSelection() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
@@ -157,7 +262,7 @@ final class SessionRoutingTests: XCTestCase {
         router.handle(.sessionList(sessions: [session]))
 
         router.handle(.error(message: "bridge disconnected"))
-        router.handle(.event(sessionId: session.id, event: .error(message: "command failed"), eventId: 10, timestamp: 10))
+        router.handle(.event(sessionId: session.id, event: .error(message: "command failed"), eventId: 1, timestamp: 10))
 
         XCTAssertEqual(timelineStore.transportTimeline.map(\.kind), [.transportError(message: "bridge disconnected")])
         XCTAssertEqual(timelineStore.timeline(for: session.id).map(\.kind), [.sessionError(message: "command failed")])

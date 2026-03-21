@@ -2,6 +2,8 @@ import Foundation
 import CodePilotProtocol
 
 public final class SessionMessageRouter {
+    public var onReplayNeeded: ((String, Int) -> Void)?
+
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
@@ -30,10 +32,21 @@ public final class SessionMessageRouter {
             }
             diagnostics.recordInfo("session_list:\(sessions.count)")
 
-        case let .event(sessionId, event, _, timestamp):
+        case let .event(sessionId, event, eventId, timestamp):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            let lastAppliedEventId = sessionStore.lastAppliedEventID(for: targetSessionId) ?? 0
+            if eventId <= lastAppliedEventId {
+                diagnostics.recordInfo("event_duplicate:\(targetSessionId):\(eventId)")
+                return
+            }
+            if eventId > lastAppliedEventId + 1 {
+                diagnostics.recordInfo("event_gap:\(targetSessionId):\(lastAppliedEventId)->\(eventId)")
+                onReplayNeeded?(targetSessionId, lastAppliedEventId)
+                return
+            }
             timelineStore.appendBridgeEvent(sessionId: targetSessionId, event: event, timestamp: timestamp)
             applySessionState(event: event, sessionId: targetSessionId)
+            sessionStore.recordAppliedEventID(eventId, for: targetSessionId)
             diagnostics.recordInfo("event:\(targetSessionId):\(eventLabel(event))")
 
         case let .fileContent(path, content, language):
@@ -52,8 +65,16 @@ public final class SessionMessageRouter {
             timelineStore.appendTransportError(message)
             diagnostics.recordError(message)
 
-        case .sessionSyncComplete:
-            break
+        case let .sessionSyncComplete(sessionId, latestEventId, resolvedSessionId):
+            let targetSessionId = resolvedSessionId ?? sessionId
+            if let resolvedSessionId, resolvedSessionId != sessionId {
+                let remap = sessionStore.applySessionRemap(from: sessionId, to: resolvedSessionId)
+                timelineStore.migrateSessionTimeline(from: remap.from, to: remap.to)
+                fileStore.migrateSessionState(from: remap.from, to: remap.to)
+                diagnostics.recordInfo("session_sync_remap:\(remap.from)->\(remap.to)")
+            }
+            sessionStore.recordAppliedEventID(latestEventId, for: targetSessionId)
+            diagnostics.recordInfo("session_sync_complete:\(targetSessionId):\(latestEventId)")
         }
     }
 

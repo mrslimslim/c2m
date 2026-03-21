@@ -30,6 +30,7 @@ private struct ConnectionSlot {
     let controller: BridgeConnectionController
     let router: SessionMessageRouter
     var summary: String = "Disconnected"
+    var shouldBootstrapReplay: Bool = false
 }
 
 // MARK: - AppModel
@@ -57,6 +58,7 @@ final class AppModel: ObservableObject {
     private let conversationSnapshotStore: ConversationSnapshotStore
     private let connectionsViewModel: ConnectionsViewModel
     private let pendingSessionCoordinator: PendingSessionCoordinator
+    private let sessionReplayCoordinator: SessionReplayCoordinator
     private let persistsSavedConnections: Bool
     private let persistsConversationState: Bool
 
@@ -97,6 +99,7 @@ final class AppModel: ObservableObject {
         let connectionsViewModel = ConnectionsViewModel(savedConnections: initialSnapshot.connections)
         _ = connectionsViewModel.selectSavedConnection(id: initialSnapshot.selectedConnectionID)
         let pendingSessionCoordinator = PendingSessionCoordinator()
+        let sessionReplayCoordinator = SessionReplayCoordinator()
 
         if let restoredConversationSnapshot {
             sessionStore.restore(from: restoredConversationSnapshot.sessionStore)
@@ -115,6 +118,7 @@ final class AppModel: ObservableObject {
             stubSender: stubSender,
             connectionsViewModel: connectionsViewModel,
             pendingSessionCoordinator: pendingSessionCoordinator,
+            sessionReplayCoordinator: sessionReplayCoordinator,
             currentConnectionSummary: "Disconnected",
             latestErrorMessage: nil,
             persistsSavedConnections: true,
@@ -152,6 +156,7 @@ final class AppModel: ObservableObject {
         stubSender: InMemoryPhoneMessageSender?,
         connectionsViewModel: ConnectionsViewModel,
         pendingSessionCoordinator: PendingSessionCoordinator,
+        sessionReplayCoordinator: SessionReplayCoordinator,
         currentConnectionSummary: String,
         latestErrorMessage: String?,
         persistsSavedConnections: Bool,
@@ -167,6 +172,7 @@ final class AppModel: ObservableObject {
         self.stubSender = stubSender
         self.connectionsViewModel = connectionsViewModel
         self.pendingSessionCoordinator = pendingSessionCoordinator
+        self.sessionReplayCoordinator = sessionReplayCoordinator
         self.currentConnectionSummary = currentConnectionSummary
         self.latestErrorMessage = latestErrorMessage
         self.persistsSavedConnections = persistsSavedConnections
@@ -242,6 +248,16 @@ final class AppModel: ObservableObject {
         )
 
         let slotID = id
+
+        router.onReplayNeeded = { [weak self] sessionID, afterEventId in
+            Task { @MainActor [weak self] in
+                self?.handleReplayNeeded(
+                    slotID: slotID,
+                    sessionID: sessionID,
+                    afterEventId: afterEventId
+                )
+            }
+        }
 
         // Wire up callbacks
         controller.onStateChange = { [weak self] state in
@@ -320,6 +336,7 @@ final class AppModel: ObservableObject {
         guard let slot = slots.removeValue(forKey: id) else { return }
         slot.controller.disconnect()
         pendingSessionCoordinator.clearPendingCommand(for: id)
+        sessionReplayCoordinator.reset(for: id)
         clearSessionNavigationTarget(for: id)
         if slots.isEmpty {
             stopPingTimer()
@@ -536,13 +553,19 @@ final class AppModel: ObservableObject {
         switch state {
         case .disconnected:
             slots[slotID]?.summary = "Disconnected"
+            slots[slotID]?.shouldBootstrapReplay = false
+            sessionReplayCoordinator.reset(for: slotID)
         case .connecting:
             slots[slotID]?.summary = "Connecting..."
+            slots[slotID]?.shouldBootstrapReplay = false
         case .reconnecting:
             slots[slotID]?.summary = "Reconnecting..."
+            slots[slotID]?.shouldBootstrapReplay = false
+            sessionReplayCoordinator.reset(for: slotID)
         case let .connected(encrypted, clientId):
             let mode = encrypted ? "encrypted" : "plaintext"
             slots[slotID]?.summary = "Connected (\(mode))"
+            slots[slotID]?.shouldBootstrapReplay = true
             diagnosticsStore.recordInfo("[\(slotID)] connected clientId=\(clientId ?? "nil") encrypted=\(encrypted)")
             // Auto-request session list
             if let slot = slots[slotID] {
@@ -561,7 +584,8 @@ final class AppModel: ObservableObject {
 
     private func handleSlotBridgeMessage(slotID: String, message: BridgeMessage) {
         guard let slot = slots[slotID] else { return }
-        let knownSessionIDs = knownSessionIDs(for: slotID)
+        normalizeSessionToSlotMappings(for: slotID)
+        let recoverableSessionIDs = knownSessionIDs(for: slotID)
 
         slot.router.handle(message)
 
@@ -570,26 +594,44 @@ final class AppModel: ObservableObject {
             for session in sessions {
                 sessionToSlotID[session.id] = slotID
             }
+            normalizeSessionToSlotMappings(for: slotID)
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
-                knownSessionIDs: knownSessionIDs,
+                knownSessionIDs: recoverableSessionIDs,
                 incomingSessions: sessions
             ) {
                 applyPendingSessionResolution(resolution)
+            }
+            if slots[slotID]?.shouldBootstrapReplay == true {
+                requestReplayBootstrap(for: slotID, sessionIDs: recoverableSessionIDs)
+                slots[slotID]?.shouldBootstrapReplay = false
             }
 
         case let .event(sessionId, _, _, _):
             let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
-                knownSessionIDs: knownSessionIDs,
+                knownSessionIDs: recoverableSessionIDs,
                 incomingEventSessionID: resolvedSessionID
             ) {
                 applyPendingSessionResolution(resolution)
             }
             sessionToSlotID[resolvedSessionID] = slotID
 
-        case .fileContent, .pong, .error, .sessionSyncComplete:
+        case let .sessionSyncComplete(sessionId, _, resolvedSessionId):
+            let resolvedSessionID = resolvedSessionId ?? sessionId
+            sessionToSlotID[resolvedSessionID] = slotID
+            if resolvedSessionID != sessionId {
+                sessionToSlotID[sessionId] = nil
+            }
+            normalizeSessionToSlotMappings(for: slotID)
+            sessionReplayCoordinator.markSyncCompleted(
+                for: slotID,
+                sessionID: sessionId,
+                resolvedSessionID: resolvedSessionId
+            )
+
+        case .fileContent, .pong, .error:
             break
         }
 
@@ -601,6 +643,7 @@ final class AppModel: ObservableObject {
         for slot in activeSlots {
             slot.controller.disconnect()
             pendingSessionCoordinator.clearPendingCommand(for: slot.savedConnectionID)
+            sessionReplayCoordinator.reset(for: slot.savedConnectionID)
             clearSessionNavigationTarget(for: slot.savedConnectionID)
         }
         slots.removeAll()
@@ -680,6 +723,67 @@ final class AppModel: ObservableObject {
         Array(sessionToSlotID.compactMap { sessionID, slotID in
             slotID == connectionID ? sessionID : nil
         })
+    }
+
+    private func normalizeSessionToSlotMappings(for connectionID: String) {
+        let currentMappings = sessionToSlotID
+        for (sessionID, slotID) in currentMappings where slotID == connectionID {
+            guard let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) else {
+                continue
+            }
+            guard resolvedSessionID != sessionID else {
+                continue
+            }
+            sessionToSlotID[resolvedSessionID] = connectionID
+            sessionToSlotID[sessionID] = nil
+        }
+    }
+
+    private func requestReplayBootstrap(for slotID: String, sessionIDs: [String]) {
+        let requests = sessionReplayCoordinator.enqueueReconnectSyncs(
+            for: slotID,
+            sessionIDs: sessionIDs
+        ) { [sessionStore] sessionID in
+            sessionStore.lastAppliedEventID(for: sessionID)
+        }
+        sendReplayRequests(requests, through: slotID)
+    }
+
+    private func handleReplayNeeded(slotID: String, sessionID: String, afterEventId: Int) {
+        guard let request = sessionReplayCoordinator.enqueueGapSync(
+            for: slotID,
+            sessionID: sessionID,
+            afterEventId: afterEventId
+        ) else {
+            return
+        }
+        sendReplayRequests([request], through: slotID)
+    }
+
+    private func sendReplayRequests(_ requests: [SessionReplayRequest], through slotID: String) {
+        guard let slot = slots[slotID], case .connected = slot.controller.state else {
+            return
+        }
+
+        for request in requests {
+            do {
+                try slot.controller.send(
+                    .syncSession(sessionId: request.sessionID, afterEventId: request.afterEventId)
+                )
+                diagnosticsStore.recordInfo(
+                    "[\(slotID)] sync_session:\(request.sessionID):after=\(request.afterEventId)"
+                )
+            } catch {
+                sessionReplayCoordinator.markSyncCompleted(
+                    for: slotID,
+                    sessionID: request.sessionID,
+                    resolvedSessionID: nil
+                )
+                diagnosticsStore.recordError(
+                    "[\(slotID)] sync_session failed for \(request.sessionID): \(error.localizedDescription)"
+                )
+            }
+        }
     }
 
     private func applyPendingSessionResolution(_ resolution: PendingSessionResolution) {
@@ -842,6 +946,7 @@ extension AppModel {
             stubSender: InMemoryPhoneMessageSender(),
             connectionsViewModel: connectionsViewModel,
             pendingSessionCoordinator: PendingSessionCoordinator(),
+            sessionReplayCoordinator: SessionReplayCoordinator(),
             currentConnectionSummary: AppPreviewFixtures.currentConnectionSummary,
             latestErrorMessage: nil,
             persistsSavedConnections: false,

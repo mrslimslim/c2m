@@ -6,17 +6,49 @@ public struct SessionStoreSnapshot: Codable, Equatable, Sendable {
     public let activeSessionId: String?
     public let draftsBySessionId: [String: String]
     public let idAliases: [String: String]
+    public let lastAppliedEventIdBySessionID: [String: Int]
+
+    enum CodingKeys: String, CodingKey {
+        case sessions
+        case activeSessionId
+        case draftsBySessionId
+        case idAliases
+        case lastAppliedEventIdBySessionID
+    }
 
     public init(
         sessions: [SessionInfo],
         activeSessionId: String?,
         draftsBySessionId: [String: String],
-        idAliases: [String: String]
+        idAliases: [String: String],
+        lastAppliedEventIdBySessionID: [String: Int] = [:]
     ) {
         self.sessions = sessions
         self.activeSessionId = activeSessionId
         self.draftsBySessionId = draftsBySessionId
         self.idAliases = idAliases
+        self.lastAppliedEventIdBySessionID = lastAppliedEventIdBySessionID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.sessions = try container.decode([SessionInfo].self, forKey: .sessions)
+        self.activeSessionId = try container.decodeIfPresent(String.self, forKey: .activeSessionId)
+        self.draftsBySessionId = try container.decode([String: String].self, forKey: .draftsBySessionId)
+        self.idAliases = try container.decode([String: String].self, forKey: .idAliases)
+        self.lastAppliedEventIdBySessionID = try container.decodeIfPresent(
+            [String: Int].self,
+            forKey: .lastAppliedEventIdBySessionID
+        ) ?? [:]
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessions, forKey: .sessions)
+        try container.encodeIfPresent(activeSessionId, forKey: .activeSessionId)
+        try container.encode(draftsBySessionId, forKey: .draftsBySessionId)
+        try container.encode(idAliases, forKey: .idAliases)
+        try container.encode(lastAppliedEventIdBySessionID, forKey: .lastAppliedEventIdBySessionID)
     }
 }
 
@@ -36,6 +68,7 @@ public final class SessionStore {
     private var idAliases: [String: String] = [:]
     private var activeSessionIdStorage: String?
     private var draftsBySessionId: [String: String] = [:]
+    private var lastAppliedEventIdBySessionID: [String: Int] = [:]
 
     public init() {}
 
@@ -143,6 +176,30 @@ public final class SessionStore {
         storageById[id] = placeholderSession(id: id, state: state)
     }
 
+    public func lastAppliedEventID(for sessionId: String) -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = resolveAliasLocked(sessionId) ?? sessionId
+        return lastAppliedEventIdBySessionID[id]
+    }
+
+    public func recordAppliedEventID(_ eventId: Int, for sessionId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        let id = resolveAliasLocked(sessionId) ?? sessionId
+        lastAppliedEventIdBySessionID[id] = max(lastAppliedEventIdBySessionID[id] ?? Int.min, eventId)
+    }
+
+    @discardableResult
+    public func applySessionRemap(from oldId: String, to newId: String) -> SessionIDRemap {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let remap = SessionIDRemap(from: oldId, to: newId)
+        applyRemapLocked(from: oldId, to: newId)
+        return remap
+    }
+
     public func draft(for sessionId: String) -> String {
         lock.lock()
         defer { lock.unlock() }
@@ -168,6 +225,7 @@ public final class SessionStore {
         idAliases.removeAll()
         activeSessionIdStorage = nil
         draftsBySessionId.removeAll()
+        lastAppliedEventIdBySessionID.removeAll()
     }
 
     public func snapshot() -> SessionStoreSnapshot {
@@ -177,7 +235,8 @@ public final class SessionStore {
             sessions: storageById.values.sorted(by: sortSessions),
             activeSessionId: activeSessionIdStorage,
             draftsBySessionId: draftsBySessionId,
-            idAliases: idAliases
+            idAliases: idAliases,
+            lastAppliedEventIdBySessionID: lastAppliedEventIdBySessionID
         )
     }
 
@@ -189,6 +248,7 @@ public final class SessionStore {
         draftsBySessionId = snapshot.draftsBySessionId
         idAliases = snapshot.idAliases
         activeSessionIdStorage = snapshot.activeSessionId
+        lastAppliedEventIdBySessionID = snapshot.lastAppliedEventIdBySessionID
 
         if let active = activeSessionIdStorage {
             let resolved = resolveAliasLocked(active)
@@ -231,6 +291,17 @@ public final class SessionStore {
             return
         }
 
+        if let existing = storageById.removeValue(forKey: oldId) {
+            storageById[newId] = SessionInfo(
+                id: newId,
+                agentType: existing.agentType,
+                workDir: existing.workDir,
+                state: existing.state,
+                createdAt: existing.createdAt,
+                lastActiveAt: existing.lastActiveAt
+            )
+        }
+
         idAliases[oldId] = newId
         for (alias, target) in idAliases where target == oldId {
             idAliases[alias] = newId
@@ -238,6 +309,10 @@ public final class SessionStore {
 
         if let draft = draftsBySessionId.removeValue(forKey: oldId) {
             draftsBySessionId[newId] = draft
+        }
+
+        if let eventId = lastAppliedEventIdBySessionID.removeValue(forKey: oldId) {
+            lastAppliedEventIdBySessionID[newId] = max(lastAppliedEventIdBySessionID[newId] ?? Int.min, eventId)
         }
 
         if activeSessionIdStorage == oldId {

@@ -47,6 +47,9 @@ export const SENSITIVE_PATTERNS = [
 ];
 
 interface ReplayState {
+  clientId: string;
+  requestedSessionId: string;
+  canonicalResolutionPending: boolean;
   sessionKeys: Set<string>;
   queuedEvents: Array<{
     type: "event";
@@ -196,7 +199,6 @@ export class Bridge {
           await this.persistAndDispatchEvent(
             sessionId,
             { type: "status", state: "idle", message: "Cancelled" },
-            [client],
           );
         }
         break;
@@ -307,6 +309,7 @@ export class Bridge {
   private async remapSessionAlias(oldSessionId: string, newSessionId: string): Promise<void> {
     if (oldSessionId === newSessionId) return;
     this.sessionAliases.set(oldSessionId, newSessionId);
+    this.propagateReplaySessionAlias(oldSessionId, newSessionId);
     await this.sessionEventStore.remapSessionAlias(oldSessionId, newSessionId);
   }
 
@@ -362,6 +365,9 @@ export class Bridge {
     afterEventId: number,
   ): Promise<void> {
     const replayState: ReplayState = {
+      clientId: client.id,
+      requestedSessionId: sessionId,
+      canonicalResolutionPending: true,
       sessionKeys: new Set<string>(),
       queuedEvents: [],
     };
@@ -371,6 +377,7 @@ export class Bridge {
     try {
       const resolvedSessionId = await this.resolveCanonicalSessionId(sessionId);
       this.registerReplayState(client.id, replayState, resolvedSessionId);
+      replayState.canonicalResolutionPending = false;
 
       const replayedEvents = await this.sessionEventStore.readEventsAfter(
         resolvedSessionId,
@@ -379,19 +386,38 @@ export class Bridge {
       const sessionIndex = await this.sessionEventStore.loadSessionIndex(resolvedSessionId);
 
       let latestEventId = afterEventId;
+      if (replayedEvents.length > 0) {
+        latestEventId = Math.max(
+          latestEventId,
+          replayedEvents[replayedEvents.length - 1]?.eventId ?? latestEventId,
+        );
+      } else if ((sessionIndex?.latestEventId ?? 0) < latestEventId) {
+        latestEventId = sessionIndex?.latestEventId ?? 0;
+      }
       for (const replayed of replayedEvents) {
         client.send(this.toEventMessage(replayed));
         latestEventId = Math.max(latestEventId, replayed.eventId);
       }
 
-      latestEventId = this.flushQueuedReplayEvents(client, resolvedSessionId, replayState, latestEventId);
-      latestEventId = Math.max(latestEventId, sessionIndex?.latestEventId ?? afterEventId);
+      latestEventId = this.flushQueuedReplayEvents(client, replayState, latestEventId);
 
-      client.send({
-        type: "session_sync_complete",
-        sessionId: resolvedSessionId,
-        latestEventId,
-        resolvedSessionId: resolvedSessionId !== sessionId ? resolvedSessionId : undefined,
+      const finalResolvedSessionId = await this.resolveCanonicalSessionId(sessionId);
+      this.registerReplayState(client.id, replayState, finalResolvedSessionId);
+
+      const finalSessionIndex = finalResolvedSessionId === resolvedSessionId
+        ? sessionIndex
+        : await this.sessionEventStore.loadSessionIndex(finalResolvedSessionId);
+
+      await this.enqueueDelivery(finalResolvedSessionId, async () => {
+        latestEventId = this.flushQueuedReplayEvents(client, replayState, latestEventId);
+        latestEventId = Math.max(latestEventId, finalSessionIndex?.latestEventId ?? 0);
+        client.send({
+          type: "session_sync_complete",
+          sessionId: finalResolvedSessionId,
+          latestEventId,
+          resolvedSessionId: finalResolvedSessionId !== sessionId ? finalResolvedSessionId : undefined,
+        });
+        this.unregisterReplayState(client.id, replayState);
       });
     } finally {
       this.unregisterReplayState(client.id, replayState);
@@ -400,7 +426,6 @@ export class Bridge {
 
   private flushQueuedReplayEvents(
     client: TransportClient,
-    sessionId: string,
     replayState: ReplayState,
     initialLatestEventId: number,
   ): number {
@@ -408,7 +433,7 @@ export class Bridge {
 
     while (replayState.queuedEvents.length > 0) {
       const queuedEvents = replayState.queuedEvents
-        .filter((message) => message.sessionId === sessionId && message.eventId > latestEventId)
+        .filter((message) => message.eventId > latestEventId)
         .sort((left, right) => left.eventId - right.eventId);
       replayState.queuedEvents = [];
 
@@ -439,7 +464,7 @@ export class Bridge {
     await this.enqueueDelivery(persisted.sessionId, async () => {
       afterPersist?.();
       this.updateSessionState(persisted);
-      this.dispatchPersistedEvent(persisted, targetClients);
+      await this.dispatchPersistedEvent(persisted, targetClients);
     });
 
     return persisted;
@@ -460,21 +485,47 @@ export class Bridge {
     session.lastActiveAt = persisted.timestamp;
   }
 
-  private dispatchPersistedEvent(
+  private async dispatchPersistedEvent(
     persisted: PersistedSessionEvent,
     targetClients?: TransportClient[],
-  ): void {
+  ): Promise<void> {
     const message = this.toEventMessage(persisted);
     const clients = targetClients ?? Array.from(this.connectedClients.values());
 
     for (const client of clients) {
-      const replayState = this.replayStates.get(this.replayStateKey(client.id, persisted.sessionId));
+      const replayState = await this.replayStateForPersistedSession(client.id, persisted.sessionId);
       if (replayState) {
         replayState.queuedEvents.push(message);
         continue;
       }
       client.send(message);
     }
+  }
+
+  private async replayStateForPersistedSession(
+    clientId: string,
+    sessionId: string,
+  ): Promise<ReplayState | undefined> {
+    const direct = this.replayStates.get(this.replayStateKey(clientId, sessionId));
+    if (direct) {
+      return direct;
+    }
+
+    const replayStates = new Set(
+      Array.from(this.replayStates.values()).filter(
+        (replayState) => replayState.clientId === clientId && replayState.canonicalResolutionPending,
+      ),
+    );
+
+    for (const replayState of replayStates) {
+      const resolvedSessionId = await this.resolveCanonicalSessionId(replayState.requestedSessionId);
+      this.registerReplayState(clientId, replayState, resolvedSessionId);
+      if (resolvedSessionId === sessionId) {
+        return replayState;
+      }
+    }
+
+    return undefined;
   }
 
   private toEventMessage(persisted: PersistedSessionEvent): {
@@ -507,6 +558,14 @@ export class Bridge {
       if (this.deliveryQueueBySession.get(sessionId) === settled) {
         this.deliveryQueueBySession.delete(sessionId);
       }
+    }
+  }
+
+  private propagateReplaySessionAlias(oldSessionId: string, newSessionId: string): void {
+    const replayStates = new Set(this.replayStates.values());
+    for (const replayState of replayStates) {
+      if (!replayState.sessionKeys.has(oldSessionId)) continue;
+      this.registerReplayState(replayState.clientId, replayState, newSessionId);
     }
   }
 

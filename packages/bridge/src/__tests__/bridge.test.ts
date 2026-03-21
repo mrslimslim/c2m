@@ -383,6 +383,78 @@ class ControlledStreamingAdapter implements AgentAdapter {
   dispose(): void {}
 }
 
+class LateRemapStreamingAdapter implements AgentAdapter {
+  readonly name = "codex" as const;
+  private readonly executeStarted = createDeferred<void>();
+  private readonly executeFinished = createDeferred<void>();
+  private session: SessionInfo | null = null;
+  private onEvent: ((event: AgentEvent) => void) | null = null;
+
+  constructor(
+    private readonly tempSessionId: string,
+    private readonly realSessionId: string,
+  ) {}
+
+  async startSession(opts: SessionOptions): Promise<SessionInfo> {
+    if (!this.session) {
+      this.session = {
+        id: this.tempSessionId,
+        agentType: "codex",
+        workDir: opts.workDir,
+        state: "idle",
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+      };
+    }
+    return this.session;
+  }
+
+  async execute(
+    sessionId: string,
+    _input: string,
+    onEvent: (event: AgentEvent) => void,
+  ): Promise<void> {
+    assert.equal(sessionId, this.tempSessionId);
+    this.onEvent = onEvent;
+    this.executeStarted.resolve();
+    await this.executeFinished.promise;
+  }
+
+  async waitUntilExecuting(): Promise<void> {
+    await this.executeStarted.promise;
+  }
+
+  emit(event: AgentEvent): void {
+    assert.ok(this.onEvent, "expected execute() to register an event callback");
+    this.onEvent(event);
+  }
+
+  remapAndEmit(event: AgentEvent): void {
+    assert.ok(this.session, "expected session to exist before remap");
+    assert.ok(this.onEvent, "expected execute() to register an event callback");
+    this.session.id = this.realSessionId;
+    this.onEvent(event);
+  }
+
+  finish(): void {
+    this.executeFinished.resolve();
+  }
+
+  async resumeSession(sessionId: string): Promise<SessionInfo> {
+    if (!this.session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    if (sessionId !== this.tempSessionId && sessionId !== this.realSessionId) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+    return this.session;
+  }
+
+  cancel(): void {}
+
+  dispose(): void {}
+}
+
 test("Bridge keeps the new Codex thread ID and reuses it for follow-up commands", async () => {
   await withBridgeHarness(async ({ bridgeAny }) => {
     const adapter = new FakeAdapter();
@@ -474,6 +546,33 @@ test("Bridge resolves temp session aliases for follow-up command and cancel", as
   });
 });
 
+test("Bridge fans out cancel events to reconnected clients following the session", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new SingleSessionAdapter("session-cancel");
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    await bridgeAny.handleCommand(originalClient, "event 1");
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    await bridgeAny.handleMessage(reconnectClient, {
+      type: "sync_session",
+      sessionId: "session-cancel",
+      afterEventId: 0,
+    });
+    await bridgeAny.handleMessage(originalClient, {
+      type: "cancel",
+      sessionId: "session-cancel",
+    });
+
+    assert.deepEqual(eventIds(reconnectClient), [1, 2]);
+    assert.deepEqual(statusMessages(reconnectClient), ["event-1", "Cancelled"]);
+  });
+});
+
 test("Bridge replays only events after the requested event cursor on reconnect", async () => {
   await withBridgeHarness(async ({ bridgeAny }) => {
     bridgeAny.adapter = new SingleSessionAdapter("session-replay");
@@ -502,6 +601,33 @@ test("Bridge replays only events after the requested event cursor on reconnect",
     const syncComplete = lastSessionSyncComplete(reconnectClient);
     assert.equal(syncComplete.sessionId, "session-replay");
     assert.equal(syncComplete.latestEventId, 5);
+  });
+});
+
+test("Bridge clamps sync completion latestEventId when the client cursor is ahead of history", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new SingleSessionAdapter("session-stale-cursor");
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    await bridgeAny.handleCommand(originalClient, "event 1");
+    await bridgeAny.handleCommand(originalClient, "event 2", "session-stale-cursor");
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    await bridgeAny.handleMessage(reconnectClient, {
+      type: "sync_session",
+      sessionId: "session-stale-cursor",
+      afterEventId: 99,
+    });
+
+    assert.deepEqual(eventIds(reconnectClient), []);
+
+    const syncComplete = lastSessionSyncComplete(reconnectClient);
+    assert.equal(syncComplete.sessionId, "session-stale-cursor");
+    assert.equal(syncComplete.latestEventId, 2);
   });
 });
 
@@ -630,6 +756,69 @@ test("Bridge arms replay queueing before awaited canonical resolution can delay 
   });
 });
 
+test("Bridge queues canonical live events while store-only alias resolution is still pending", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new SingleSessionAdapter("real-session-store-only");
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    await bridgeAny.handleCommand(originalClient, "event 1");
+    await bridgeAny.sessionEventStore.remapSessionAlias(
+      "temp-session-store-only",
+      "real-session-store-only",
+    );
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    const store = bridgeAny.sessionEventStore;
+    const originalResolveSessionId = store.resolveSessionId.bind(store);
+    const resolveStarted = createDeferred<void>();
+    const resolveRelease = createDeferred<void>();
+    let delayedResolveCount = 0;
+
+    store.resolveSessionId = async (sessionId: string) => {
+      if (sessionId === "temp-session-store-only" && delayedResolveCount === 0) {
+        delayedResolveCount += 1;
+        resolveStarted.resolve();
+        await resolveRelease.promise;
+      }
+      return originalResolveSessionId(sessionId);
+    };
+
+    try {
+      const syncPromise = bridgeAny.handleMessage(reconnectClient, {
+        type: "sync_session",
+        sessionId: "temp-session-store-only",
+        afterEventId: 0,
+      });
+
+      await resolveStarted.promise;
+      await bridgeAny.handleCommand(originalClient, "event 2", "real-session-store-only");
+
+      assert.deepEqual(
+        eventIds(reconnectClient),
+        [],
+        "reconnecting client should queue canonical live events until store-backed alias resolution finishes",
+      );
+
+      resolveRelease.resolve();
+      await syncPromise;
+    } finally {
+      store.resolveSessionId = originalResolveSessionId;
+    }
+
+    assert.deepEqual(eventIds(reconnectClient), [1, 2]);
+    assert.deepEqual(statusMessages(reconnectClient), ["event-1", "event-2"]);
+
+    const syncComplete = lastSessionSyncComplete(reconnectClient);
+    assert.equal(syncComplete.sessionId, "real-session-store-only");
+    assert.equal(syncComplete.resolvedSessionId, "real-session-store-only");
+    assert.equal(syncComplete.latestEventId, 2);
+  });
+});
+
 test("Bridge replays a temp Codex session alias as one continuous session history", async () => {
   await withBridgeHarness(async ({ bridgeAny }) => {
     bridgeAny.adapter = new RemapDuringExecuteAdapter();
@@ -659,6 +848,195 @@ test("Bridge replays a temp Codex session alias as one continuous session histor
     assert.equal(syncComplete.sessionId, "real-session-remap");
     assert.equal(syncComplete.resolvedSessionId, "real-session-remap");
     assert.equal(syncComplete.latestEventId, 4);
+  });
+});
+
+test("Bridge keeps late temp-to-real remaps replay-safe during sync_session", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    const adapter = new LateRemapStreamingAdapter("temp-session-late", "real-session-late");
+    bridgeAny.adapter = adapter;
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    const commandPromise = bridgeAny.handleCommand(originalClient, "streaming command");
+    await adapter.waitUntilExecuting();
+    adapter.emit({
+      type: "status",
+      state: "thinking",
+      message: "before late remap",
+    });
+    await waitFor(
+      () => eventIds(originalClient).length === 1,
+      "original client should receive the pre-remap live event",
+    );
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    const store = bridgeAny.sessionEventStore;
+    const originalReadEventsAfter = store.readEventsAfter.bind(store);
+    const replayStarted = createDeferred<void>();
+    const replayRelease = createDeferred<void>();
+
+    store.readEventsAfter = async (sessionId: string, afterEventId: number) => {
+      replayStarted.resolve();
+      await replayRelease.promise;
+      return originalReadEventsAfter(sessionId, afterEventId);
+    };
+
+    try {
+      const syncPromise = bridgeAny.handleMessage(reconnectClient, {
+        type: "sync_session",
+        sessionId: "temp-session-late",
+        afterEventId: 0,
+      });
+
+      await replayStarted.promise;
+      adapter.remapAndEmit({
+        type: "status",
+        state: "thinking",
+        message: "late remap event",
+      });
+
+      await waitFor(
+        () => eventIds(originalClient).length === 2,
+        "original client should receive the remapped live event",
+      );
+
+      assert.deepEqual(
+        eventIds(reconnectClient),
+        [],
+        "reconnecting client should queue remapped live events until replay finishes",
+      );
+
+      replayRelease.resolve();
+      await syncPromise;
+
+      assert.deepEqual(eventIds(reconnectClient), [1, 2]);
+      assert.deepEqual(statusMessages(reconnectClient), [
+        "before late remap",
+        "late remap event",
+      ]);
+      assert.deepEqual(
+        eventMessages(reconnectClient).map((message) => message.sessionId),
+        ["real-session-late", "real-session-late"],
+      );
+
+      const syncComplete = lastSessionSyncComplete(reconnectClient);
+      assert.equal(syncComplete.sessionId, "real-session-late");
+      assert.equal(syncComplete.resolvedSessionId, "real-session-late");
+      assert.equal(syncComplete.latestEventId, 2);
+    } finally {
+      store.readEventsAfter = originalReadEventsAfter;
+      adapter.finish();
+      await commandPromise;
+    }
+  });
+});
+
+test("Bridge flushes late-remap events queued during final sync completion bookkeeping", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    const adapter = new LateRemapStreamingAdapter("temp-session-final", "real-session-final");
+    bridgeAny.adapter = adapter;
+
+    const originalClient = createClient("client-original");
+    connectClient(bridgeAny, originalClient);
+
+    const commandPromise = bridgeAny.handleCommand(originalClient, "streaming command");
+    await adapter.waitUntilExecuting();
+    adapter.emit({
+      type: "status",
+      state: "thinking",
+      message: "before final completion window",
+    });
+    await waitFor(
+      () => eventIds(originalClient).length === 1,
+      "original client should receive the pre-remap event",
+    );
+
+    const reconnectClient = createClient("client-reconnect");
+    connectClient(bridgeAny, reconnectClient);
+
+    const store = bridgeAny.sessionEventStore;
+    const originalReadEventsAfter = store.readEventsAfter.bind(store);
+    const originalLoadSessionIndex = store.loadSessionIndex.bind(store);
+    const replayStarted = createDeferred<void>();
+    const replayRelease = createDeferred<void>();
+    const finalIndexStarted = createDeferred<void>();
+    const finalIndexRelease = createDeferred<void>();
+
+    store.readEventsAfter = async (sessionId: string, afterEventId: number) => {
+      replayStarted.resolve();
+      await replayRelease.promise;
+      return originalReadEventsAfter(sessionId, afterEventId);
+    };
+
+    store.loadSessionIndex = async (sessionId: string) => {
+      if (sessionId === "real-session-final") {
+        finalIndexStarted.resolve();
+        await finalIndexRelease.promise;
+      }
+      return originalLoadSessionIndex(sessionId);
+    };
+
+    try {
+      const syncPromise = bridgeAny.handleMessage(reconnectClient, {
+        type: "sync_session",
+        sessionId: "temp-session-final",
+        afterEventId: 0,
+      });
+
+      await replayStarted.promise;
+      adapter.remapAndEmit({
+        type: "status",
+        state: "thinking",
+        message: "late remap event",
+      });
+      await waitFor(
+        () => eventIds(originalClient).length === 2,
+        "original client should receive the remapped event",
+      );
+
+      replayRelease.resolve();
+      await finalIndexStarted.promise;
+
+      adapter.emit({
+        type: "status",
+        state: "thinking",
+        message: "final completion window event",
+      });
+      await waitFor(
+        () => eventIds(originalClient).length === 3,
+        "original client should receive the final-window event",
+      );
+
+      assert.deepEqual(
+        eventIds(reconnectClient),
+        [1, 2],
+        "reconnecting client should queue the final-window event until sync completes",
+      );
+
+      finalIndexRelease.resolve();
+      await syncPromise;
+    } finally {
+      store.readEventsAfter = originalReadEventsAfter;
+      store.loadSessionIndex = originalLoadSessionIndex;
+      adapter.finish();
+      await commandPromise;
+    }
+
+    assert.deepEqual(eventIds(reconnectClient), [1, 2, 3]);
+    assert.deepEqual(statusMessages(reconnectClient), [
+      "before final completion window",
+      "late remap event",
+      "final completion window event",
+    ]);
+
+    const syncComplete = lastSessionSyncComplete(reconnectClient);
+    assert.equal(syncComplete.sessionId, "real-session-final");
+    assert.equal(syncComplete.resolvedSessionId, "real-session-final");
+    assert.equal(syncComplete.latestEventId, 3);
   });
 });
 

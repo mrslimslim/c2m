@@ -3,7 +3,7 @@ import XCTest
 import CodePilotProtocol
 
 final class StoreSnapshotTests: XCTestCase {
-    func testSessionStoreSnapshotRoundTripRestoresSessionsAliasesActiveSelectionAndDrafts() {
+    func testSessionStoreSnapshotRoundTripRestoresSessionsAliasesActiveSelectionDraftsAndReplayCursors() {
         let store = SessionStore()
 
         let temporary = makeSession(id: "temp-session", createdAt: 100, lastActiveAt: 101)
@@ -12,7 +12,10 @@ final class StoreSnapshotTests: XCTestCase {
         _ = store.applySessionList([temporary])
         store.setActiveSession(id: temporary.id)
         store.setDraft("continue", for: temporary.id)
+        store.recordAppliedEventID(7, for: temporary.id)
         _ = store.applySessionList([stable])
+
+        XCTAssertEqual(store.snapshot().lastAppliedEventIdBySessionID[stable.id], 7)
 
         let restored = SessionStore()
         restored.restore(from: store.snapshot())
@@ -21,6 +24,24 @@ final class StoreSnapshotTests: XCTestCase {
         XCTAssertEqual(restored.activeSessionId, stable.id)
         XCTAssertEqual(restored.resolvedSessionId(for: temporary.id), stable.id)
         XCTAssertEqual(restored.draft(for: stable.id), "continue")
+        XCTAssertEqual(restored.lastAppliedEventID(for: stable.id), 7)
+        XCTAssertEqual(restored.lastAppliedEventID(for: temporary.id), 7)
+    }
+
+    func testSessionStoreExplicitRemapMigratesReplayCursorToCanonicalSessionID() {
+        let store = SessionStore()
+        let temporary = makeSession(id: "temp-session", createdAt: 100, lastActiveAt: 101)
+
+        store.upsert(temporary)
+        store.recordAppliedEventID(4, for: temporary.id)
+
+        XCTAssertEqual(
+            store.applySessionRemap(from: temporary.id, to: "stable-session"),
+            .init(from: "temp-session", to: "stable-session")
+        )
+        XCTAssertEqual(store.lastAppliedEventID(for: "stable-session"), 4)
+        XCTAssertEqual(store.lastAppliedEventID(for: temporary.id), 4)
+        XCTAssertEqual(store.sessions.map(\.id), ["stable-session"])
     }
 
     func testTimelineStoreKeepsItemsSortedWhenEarlierCommandIsStagedLater() {
@@ -58,6 +79,7 @@ final class StoreSnapshotTests: XCTestCase {
         _ = sessionStore.applySessionList([session])
         sessionStore.setActiveSession(id: session.id)
         sessionStore.setDraft("follow-up", for: session.id)
+        sessionStore.recordAppliedEventID(9, for: session.id)
         timelineStore.appendUserCommand("first prompt", sessionId: session.id, timestamp: 10)
         fileStore.markRequested(path: "README.md", sessionId: session.id)
         fileStore.routeFileContent(path: "README.md", content: "hello", language: "markdown")
@@ -73,6 +95,23 @@ final class StoreSnapshotTests: XCTestCase {
         try store.saveSnapshot(snapshot)
 
         XCTAssertEqual(store.loadSnapshot(), snapshot)
+    }
+
+    func testSessionStoreSnapshotDecodesMissingReplayCursorsAsEmptyState() throws {
+        let data = Data(
+            """
+            {
+              "sessions": [],
+              "activeSessionId": null,
+              "draftsBySessionId": {},
+              "idAliases": {}
+            }
+            """.utf8
+        )
+
+        let snapshot = try JSONDecoder().decode(SessionStoreSnapshot.self, from: data)
+
+        XCTAssertEqual(snapshot.lastAppliedEventIdBySessionID, [String: Int]())
     }
 }
 
