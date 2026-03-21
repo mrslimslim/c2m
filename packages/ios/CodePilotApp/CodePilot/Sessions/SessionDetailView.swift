@@ -98,6 +98,8 @@ struct SessionDetailView: View {
                 if let session = session, isBusy(session.state) {
                     TypingIndicator(state: session.state, agentType: session.agentType)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 4)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
@@ -108,7 +110,10 @@ struct SessionDetailView: View {
             appModel.selectSession(id: sessionID)
             draft = viewModel.draft
         }
-        .alert("Error", isPresented: .constant(errorMessage != nil)) {
+        .alert("Error", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
@@ -236,8 +241,8 @@ struct SessionDetailView: View {
                     }
                 }
 
-                // Slash hint
-                if !showSlashMenu && draft.isEmpty {
+                // Slash hint (hidden when agent is busy or slash menu is open)
+                if !showSlashMenu && draft.isEmpty && !(session.map { isBusy($0.state) } ?? false) {
                     SlashHintButton {
                         draft = "/"
                         isComposerFocused = true

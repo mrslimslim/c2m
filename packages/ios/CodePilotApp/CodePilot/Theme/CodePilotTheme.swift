@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import CodePilotProtocol
 
 // MARK: - Design System
@@ -352,6 +353,7 @@ struct TypingIndicator: View {
     let agentType: AgentType
 
     @State private var phase: Int = 0
+    private let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
 
     private var label: String {
         switch state {
@@ -374,7 +376,7 @@ struct TypingIndicator: View {
                         .opacity(phase == i ? 1.0 : 0.4)
                 }
             }
-            .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: phase)
+            .animation(.easeInOut(duration: 0.4), value: phase)
 
             Text(label)
                 .font(.caption.weight(.medium))
@@ -382,10 +384,8 @@ struct TypingIndicator: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
-                phase = (phase + 1) % 3
-            }
+        .onReceive(timer) { _ in
+            phase = (phase + 1) % 3
         }
     }
 }

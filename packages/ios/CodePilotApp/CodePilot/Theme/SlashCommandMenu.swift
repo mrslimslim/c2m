@@ -87,10 +87,9 @@ struct SlashCommandMenu: View {
         SlashCommands.matching(inputText)
     }
 
+    @ViewBuilder
     var body: some View {
-        if matchingCommands.isEmpty { return AnyView(EmptyView()) }
-
-        return AnyView(
+        if !matchingCommands.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 // Header
                 HStack(spacing: 6) {
@@ -132,7 +131,7 @@ struct SlashCommandMenu: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Color(.separator).opacity(0.3), lineWidth: 0.5)
             )
-        )
+        }
     }
 
     private func commandSection(_ cmd: SlashCommand) -> some View {

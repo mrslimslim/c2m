@@ -92,6 +92,7 @@ struct FileViewerView: View {
 
                         Text(line.isEmpty ? " " : line)
                             .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.85))
                             .textSelection(.enabled)
                     }
                     .padding(.vertical, 1)

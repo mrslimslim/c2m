@@ -78,7 +78,7 @@ private struct SessionCard: View {
                         .lineLimit(1)
 
                     if isActive {
-                        PulsingDot(color: .green)
+                        PulsingDot(color: CPTheme.connectedColor)
                     }
                 }
 
@@ -122,7 +122,7 @@ private struct NewSessionSheet: View {
                 VStack(spacing: 8) {
                     Image(systemName: "plus.message.fill")
                         .font(.system(size: 40))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(CPTheme.accent)
                     Text("New Session")
                         .font(.title3.weight(.semibold))
                     Text("Send a command to create a new session with the AI agent.")
@@ -169,7 +169,10 @@ private struct NewSessionSheet: View {
                     .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .alert("Error", isPresented: .constant(errorMessage != nil)) {
+            .alert("Error", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
                 Button("OK") { errorMessage = nil }
             } message: {
                 Text(errorMessage ?? "")

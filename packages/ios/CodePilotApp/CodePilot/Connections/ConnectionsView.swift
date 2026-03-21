@@ -133,7 +133,10 @@ struct ConnectionsView: View {
                     isShowingScanner = false
                 }
             }
-            .alert("Connection Error", isPresented: .constant(appModel.latestErrorMessage != nil)) {
+            .alert("Connection Error", isPresented: Binding(
+                get: { appModel.latestErrorMessage != nil },
+                set: { if !$0 { appModel.latestErrorMessage = nil } }
+            )) {
                 Button("OK") {
                     appModel.latestErrorMessage = nil
                 }
@@ -263,10 +266,10 @@ private struct SavedConnectionRow: View {
     }
 
     private var statusColor: Color {
-        if isConnected { return .green }
-        if isConnecting { return .orange }
-        if slotState.lowercased().contains("failed") { return .red }
-        return .secondary
+        if isConnected { return CPTheme.connectedColor }
+        if isConnecting { return CPTheme.connectingColor }
+        if slotState.lowercased().contains("failed") { return CPTheme.failedColor }
+        return CPTheme.disconnectedColor
     }
 
     var body: some View {
@@ -274,14 +277,14 @@ private struct SavedConnectionRow: View {
             // Connection type icon
             Image(systemName: connectionIcon(for: savedConnection.config))
                 .font(.title3)
-                .foregroundStyle(isConnected ? .blue : .secondary)
+                .foregroundStyle(isConnected ? CPTheme.accent : .secondary)
                 .frame(width: 28)
 
             // Info
             VStack(alignment: .leading, spacing: 3) {
                 Text(savedConnection.name)
                     .font(.body.weight(isConnected ? .semibold : .regular))
-                    .foregroundStyle(isConnected ? .blue : .primary)
+                    .foregroundStyle(isConnected ? CPTheme.accent : .primary)
                 Text(slotState)
                     .font(.caption)
                     .foregroundStyle(statusColor)
@@ -308,7 +311,7 @@ private struct SavedConnectionRow: View {
                     onDisconnect()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.red.opacity(0.7))
+                        .foregroundStyle(CPTheme.error.opacity(0.7))
                         .imageScale(.large)
                 }
                 .buttonStyle(.plain)
@@ -317,7 +320,7 @@ private struct SavedConnectionRow: View {
                     onConnect()
                 } label: {
                     Image(systemName: "bolt.circle.fill")
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(CPTheme.accent)
                         .imageScale(.large)
                 }
                 .buttonStyle(.plain)
