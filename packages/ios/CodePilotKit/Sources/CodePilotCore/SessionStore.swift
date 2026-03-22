@@ -291,11 +291,31 @@ public final class SessionStore {
             return remaps
         }
 
-        let candidateOldSessions = missingPreviousIds.compactMap { previousById[$0] }
-        for newSession in incomingById.values where previousById[newSession.id] == nil {
-            if let oldSession = candidateOldSessions.first(where: { sameIdentity($0, newSession) }) {
+        let unmatchedIncomingSessions = incomingById.values
+            .filter { previousById[$0.id] == nil }
+            .sorted(by: sortSessions)
+        var matchedOldSessionIDs: Set<String> = []
+        var matchedNewSessionIDs: Set<String> = []
+
+        let candidateOldSessions = missingPreviousIds
+            .compactMap { previousById[$0] }
+            .sorted(by: sortSessions)
+        for newSession in unmatchedIncomingSessions {
+            if let oldSession = candidateOldSessions.first(where: {
+                !matchedOldSessionIDs.contains($0.id) &&
+                sameIdentity($0, newSession)
+            }) {
                 remaps.append(.init(from: oldSession.id, to: newSession.id))
+                matchedOldSessionIDs.insert(oldSession.id)
+                matchedNewSessionIDs.insert(newSession.id)
             }
+        }
+
+        let remainingOldSessions = candidateOldSessions.filter { !matchedOldSessionIDs.contains($0.id) }
+        let remainingIncomingSessions = unmatchedIncomingSessions.filter { !matchedNewSessionIDs.contains($0.id) }
+        let placeholderSessions = remainingOldSessions.filter(isPlaceholderSession)
+        if placeholderSessions.count == 1, remainingIncomingSessions.count == 1 {
+            remaps.append(.init(from: placeholderSessions[0].id, to: remainingIncomingSessions[0].id))
         }
 
         return remaps
@@ -305,6 +325,10 @@ public final class SessionStore {
         lhs.agentType == rhs.agentType &&
             lhs.workDir == rhs.workDir &&
             lhs.createdAt == rhs.createdAt
+    }
+
+    private func isPlaceholderSession(_ session: SessionInfo) -> Bool {
+        session.workDir.isEmpty
     }
 
     private func applyRemapLocked(from oldId: String, to newId: String) {

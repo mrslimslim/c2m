@@ -3,16 +3,17 @@
  */
 
 import type { AgentEvent } from "@codepilot/protocol";
-import type { SessionInfo } from "@codepilot/protocol";
+import type { ModelReasoningEffort, SessionConfig, SessionInfo } from "@codepilot/protocol";
 
 export interface SessionOptions {
   model?: string;
+  modelReasoningEffort?: ModelReasoningEffort;
   /** Working directory for the agent */
   workDir: string;
   /** Codex approval policy */
-  approvalPolicy?: string;
+  approvalPolicy?: SessionConfig["approvalPolicy"];
   /** Codex sandbox mode */
-  sandboxMode?: string;
+  sandboxMode?: SessionConfig["sandboxMode"];
 }
 
 export interface AgentAdapter {
@@ -32,6 +33,7 @@ export interface AgentAdapter {
     sessionId: string,
     input: string,
     onEvent: (event: AgentEvent) => void,
+    opts?: SessionOptions,
   ): Promise<void>;
 
   /**

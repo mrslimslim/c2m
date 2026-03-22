@@ -174,10 +174,12 @@ type AgentState = "idle" | "thinking" | "coding" | "running_command" | "waiting_
 | 类型 | 字段 | 说明 |
 |------|------|------|
 | `command` | `text`, `sessionId?` | 发送指令 |
+| `slash_action` | `commandId`, `sessionId?`, `arguments?` | 执行由 bridge 处理的 slash 动作 |
 | `cancel` | `sessionId` | 取消执行 |
 | `file_req` | `path`, `sessionId` | 请求文件内容 |
 | `list_sessions` | — | 获取会话列表 |
 | `ping` | `ts` | 延迟测量 |
+| `sync_session` | `sessionId`, `afterEventId` | 按事件游标请求会话增量回放 |
 
 ### 4.4 Bridge → 手机消息 (`BridgeMessage`)
 
@@ -185,18 +187,55 @@ type AgentState = "idle" | "thinking" | "coding" | "running_command" | "waiting_
 |------|------|------|
 | `event` | `sessionId`, `event`, `timestamp` | 代理事件 |
 | `session_list` | `sessions: SessionInfo[]` | 会话列表 |
+| `session_sync_complete` | `sessionId`, `latestEventId`, `resolvedSessionId?` | 会话增量回放完成 |
 | `file_content` | `path`, `content`, `language` | 文件内容 |
+| `slash_catalog` | `adapter`, `adapterVersion?`, `catalogVersion`, `defaults`, `commands` | 当前适配器版本下的 slash 元数据 |
+| `slash_action_result` | `commandId`, `ok`, `message?` | slash 动作执行结果 |
 | `pong` | `latencyMs` | Pong 响应 |
 | `error` | `message` | 错误 |
 
-### 4.5 E2E 握手消息
+### 4.5 扩展能力：会话回放与 Slash Catalog
+
+`handshake_ok.capabilities` 用来声明 bridge 当前支持的扩展能力。当前已使用两个能力位：
+
+- `session_replay_v1`: iOS 端可以在重连或发现事件 gap 时发送 `sync_session`
+- `slash_catalog_v1`: bridge 会在连接建立后主动下发 `slash_catalog`
+
+`SessionConfig` 也已经扩展为可携带以下字段：
+
+```typescript
+interface SessionConfig {
+  model?: string;
+  modelReasoningEffort?: string;
+  approvalPolicy?: string;
+  sandboxMode?: string;
+}
+```
+
+其中 `modelReasoningEffort` 允许 iOS 客户端把 `/model -> reasoning` 这种两级 slash 流程映射成真实的 Codex 会话配置，而不是本地伪配置。
+
+`slash_catalog` 采用“bridge 按 adapter + version 生成元数据，客户端纯渲染”的模式：
+
+- bridge 在启动时探测适配器版本，例如当前 Codex 通过 `codex --version` 探测到 `codex-cli 0.116.0`
+- 根据 `adapter + adapterVersion` 选择 slash catalog
+- iOS 端只存储 catalog，并基于 catalog 渲染嵌套菜单、默认值、当前值、禁用原因
+
+Slash 元数据中的关键结构：
+
+- `SlashCommandMeta`: 根命令定义，区分 `workflow` / `bridge_action` / `client_action` / `insert_text`
+- `SlashMenuNode`: 递归菜单节点，支持多层嵌套
+- `SlashEffect`: 本地效果，目前支持 `set_session_config`、`set_input_text`、`clear_input_text`
+
+这使得 `/model`、`/permissions` 这类多层配置命令可以完全由协议驱动，而不是写死在 iOS 客户端。
+
+### 4.6 E2E 握手消息
 
 | 类型 | 方向 | 字段 | 说明 |
 |------|------|------|------|
 | `handshake` | Phone → Bridge | `phone_pubkey`, `otp` | E2E 密钥交换发起 |
 | `handshake_ok` | Bridge → Phone | `encrypted`, `clientId?` | 握手成功确认 |
 
-### 4.6 加密消息线格式
+### 4.7 加密消息线格式
 
 ```typescript
 interface EncryptedWireMessage {
@@ -228,11 +267,12 @@ Bridge
 
 **启动流程**:
 1. 解析代理类型（auto-detect 优先尝试 Codex，回退 Claude）
-2. 如果 `--relay` 模式，动态 import `RelayTransport`
-3. 启动传输层，获取 `url`、`httpUrl`、`pairingData`
-4. 生成并显示 QR 码
-5. 注册 `onConnect` / `onDisconnect` / `onMessage` 处理器
-6. 注册 SIGINT / SIGTERM 优雅关闭
+2. 探测适配器版本，并缓存对应的 slash catalog
+3. 如果 `--relay` 模式，动态 import `RelayTransport`
+4. 启动传输层，获取 `url`、`httpUrl`、`pairingData`
+5. 生成并显示 QR 码
+6. 注册 `onConnect` / `onDisconnect` / `onMessage` 处理器
+7. 注册 SIGINT / SIGTERM 优雅关闭
 
 **消息路由**:
 
@@ -240,15 +280,43 @@ Bridge
 handleMessage(client, message) {
   switch (message.type) {
     case "command"       → handleCommand() → adapter.execute()
+    case "slash_action"  → dispatchSlashAction()
     case "cancel"        → adapter.cancel()
     case "list_sessions" → 返回 sessions 列表
     case "ping"          → 返回 pong + latency
     case "file_req"      → handleFileRequest() (带安全校验)
+    case "sync_session"  → 返回指定会话的增量事件并以 session_sync_complete 收尾
   }
 }
 ```
 
-### 5.2 Agent Adapter 接口
+### 5.2 Slash Catalog 生成
+
+Bridge 侧新增 `src/slash/` 目录，负责：
+
+- 通过 `detectAdapterVersion()` 探测适配器版本
+- 按 `adapter + version` 生成 `slash_catalog`
+- 在客户端连接成功后主动发送 catalog
+- 处理来自手机的 `slash_action`
+
+当前 Codex `0.116.0` catalog 已覆盖：
+
+- `/model`
+- `/fast`
+- `/permissions`
+- `/experimental`
+- `/skills`
+- `/review`
+- `/rename`
+- `/new`
+
+其中：
+
+- `/model` 和 `/permissions` 是 `workflow`
+- `/new` 是 `client_action`
+- 尚未真实打通的桥接命令会以 `disabled + reason` 下发，而不是客户端假装可用
+
+### 5.3 Agent Adapter 接口
 
 ```typescript
 interface AgentAdapter {
@@ -261,7 +329,7 @@ interface AgentAdapter {
 }
 ```
 
-#### 5.2.1 CodexAdapter
+#### 5.3.1 CodexAdapter
 
 **文件**: `packages/bridge/src/adapters/codex.ts`
 
@@ -272,7 +340,7 @@ interface AgentAdapter {
 
 **Session ID 别名机制**: Codex 的 thread ID 在 `thread.started` 事件后才可用。创建时先分配临时 ID `codex-{ts}-{rand}`，真实 ID 到达后**同时保留**新旧两个 key 指向同一 session 对象，避免手机端在此窗口期发送命令时找不到 session。
 
-#### 5.2.2 ClaudeAdapter
+#### 5.3.2 ClaudeAdapter
 
 **文件**: `packages/bridge/src/adapters/claude.ts`
 
@@ -285,7 +353,7 @@ interface AgentAdapter {
 
 **filesChanged 收集**: execute 过程中维护 `changedFiles: Set<string>`，每次遇到 Write/Edit tool_use 事件时将文件路径加入集合，进程退出时在 `turn_completed` 中汇总返回。
 
-### 5.3 Transport 接口
+### 5.4 Transport 接口
 
 ```typescript
 interface TransportServer {
@@ -305,7 +373,7 @@ interface TransportClient {
 
 `Bridge` 仅依赖此接口，不做类型转换。`LocalTransport` 和 `RelayTransport` 均实现此接口。
 
-#### 5.3.1 LocalTransport
+#### 5.4.1 LocalTransport
 
 **文件**: `packages/bridge/src/transport/local.ts`
 
@@ -325,7 +393,7 @@ interface TransportClient {
 ```json
 {
   "host": "192.168.1.x",
-  "port": 19260,
+  "port": 19412,
   "token": "hex32",
   "bridge_pubkey": "base64(32 bytes)",
   "otp": "hex6",
@@ -333,7 +401,7 @@ interface TransportClient {
 }
 ```
 
-#### 5.3.2 RelayTransport
+#### 5.4.2 RelayTransport
 
 **文件**: `packages/bridge/src/transport/relay.ts`
 
@@ -543,7 +611,7 @@ codepilot [options]
 
 Options:
   -a, --agent <type>      Agent type: codex | claude | auto (default: "auto")
-  -p, --port <number>     WebSocket port (default: "19260")
+  -p, --port <value>      WebSocket port (default: "auto")
   --advertised-host <address>  Override the host embedded in QR/pairing output
   -d, --dir <path>        Working directory (default: ".")
   --relay                 Use Relay server for cross-network connections
@@ -713,7 +781,7 @@ interface EncryptedMessage { v: 1; nonce: string; ciphertext: string; tag: strin
 
 | 常量 | 值 | 位置 |
 |------|-----|------|
-| 默认 WebSocket 端口 | `19260` | `local.ts` |
+| 默认 WebSocket 端口请求 | `0` (`auto`) | `local.ts` |
 | Token 长度 | 32 hex chars (16 bytes) | `local.ts` |
 | OTP 长度 | 6 hex chars (3 bytes) | `local.ts` |
 | Relay 离线缓存上限 | 100 条 | `channel.ts` |

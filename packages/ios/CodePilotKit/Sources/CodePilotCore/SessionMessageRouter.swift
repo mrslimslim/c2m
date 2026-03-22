@@ -8,17 +8,23 @@ public final class SessionMessageRouter {
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
     private let diagnostics: DiagnosticsStore
+    private let slashCatalogStore: SlashCatalogStore?
+    private let connectionID: String?
 
     public init(
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
-        diagnostics: DiagnosticsStore
+        diagnostics: DiagnosticsStore,
+        slashCatalogStore: SlashCatalogStore? = nil,
+        connectionID: String? = nil
     ) {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
         self.diagnostics = diagnostics
+        self.slashCatalogStore = slashCatalogStore
+        self.connectionID = connectionID
     }
 
     public func handle(_ message: BridgeMessage) {
@@ -81,6 +87,18 @@ public final class SessionMessageRouter {
             }
             sessionStore.recordAppliedEventID(latestEventId, for: targetSessionId)
             diagnostics.recordInfo("session_sync_complete:\(targetSessionId):\(latestEventId)")
+
+        case let .slashCatalog(message):
+            if let slashCatalogStore, let connectionID {
+                slashCatalogStore.replaceCatalog(message, for: connectionID)
+            }
+            diagnostics.recordInfo("slash_catalog:\(message.adapter.rawValue):\(message.commands.count)")
+
+        case let .slashActionResult(message):
+            if let slashCatalogStore, let connectionID {
+                slashCatalogStore.recordActionResult(message, for: connectionID)
+            }
+            diagnostics.recordInfo("slash_action_result:\(message.commandId):\(message.ok)")
         }
     }
 

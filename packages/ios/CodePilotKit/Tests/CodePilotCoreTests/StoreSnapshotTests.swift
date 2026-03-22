@@ -44,6 +44,32 @@ final class StoreSnapshotTests: XCTestCase {
         XCTAssertEqual(store.sessions.map(\.id), ["stable-session"])
     }
 
+    func testSessionStoreRemapsPlaceholderSessionToSingleIncomingRealSession() {
+        let store = SessionStore()
+
+        store.updateState(for: "temp-session", state: .thinking)
+        store.setActiveSession(id: "temp-session")
+        store.setDraft("continue", for: "temp-session")
+
+        _ = store.applySessionList(
+            [
+                .init(
+                    id: "stable-session",
+                    agentType: .codex,
+                    workDir: "/tmp/repo",
+                    state: .thinking,
+                    createdAt: 100,
+                    lastActiveAt: 200
+                )
+            ]
+        )
+
+        XCTAssertEqual(store.activeSessionId, "stable-session")
+        XCTAssertEqual(store.resolvedSessionId(for: "temp-session"), "stable-session")
+        XCTAssertEqual(store.draft(for: "stable-session"), "continue")
+        XCTAssertEqual(store.session(for: "temp-session")?.workDir, "/tmp/repo")
+    }
+
     func testTimelineStoreKeepsItemsSortedWhenEarlierCommandIsStagedLater() {
         let store = TimelineStore()
 

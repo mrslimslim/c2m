@@ -4,10 +4,11 @@
  * CodePilot Bridge CLI — mobile command center for AI coding agents.
  *
  * Usage:
- *   npx codepilot                     # auto-detect agent, LAN mode
+ *   npx codepilot                     # auto-detect agent, LAN mode with auto port
  *   npx codepilot --agent codex       # use Codex
  *   npx codepilot --agent claude      # use Claude Code
  *   npx codepilot --port 19260        # custom port
+ *   npx codepilot --port auto         # auto-select an available port
  *   npx codepilot --advertised-host codepilot.tailnet.ts.net  # stable pairing host
  *   npx codepilot --dir /path/to/proj # project directory
  *   npx codepilot --tunnel            # expose via Cloudflare Tunnel
@@ -20,6 +21,19 @@ import { resolve } from "node:path";
 import { Bridge } from "../bridge.js";
 import { log } from "../utils/logger.js";
 
+function parsePort(value: string): number {
+  if (value === "auto") {
+    return 0;
+  }
+
+  const port = Number.parseInt(value, 10);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`Invalid port: ${value}. Expected a number between 0 and 65535, or "auto".`);
+  }
+
+  return port;
+}
+
 const program = new Command();
 
 program
@@ -27,7 +41,7 @@ program
   .description("Mobile command center for AI coding agents")
   .version("0.1.0")
   .option("-a, --agent <type>", "Agent type: codex | claude | auto", "auto")
-  .option("-p, --port <number>", "WebSocket port", "19260")
+  .option("-p, --port <value>", "WebSocket port (default: auto)", "auto")
   .option("-H, --host <address>", "Bind address (use :: for IPv6 dual-stack)", "0.0.0.0")
   .option("--advertised-host <address>", "Override the host embedded in QR/pairing output")
   .option("-d, --dir <path>", "Working directory", ".")
@@ -46,7 +60,7 @@ program
       relayUrl?: string;
     }) => {
       const agent = opts.agent as "codex" | "claude" | "auto";
-      const port = parseInt(opts.port, 10);
+      const port = parsePort(opts.port);
       const host = opts.host;
       const advertisedHost = opts.advertisedHost;
       const workDir = resolve(opts.dir);
@@ -69,7 +83,7 @@ program
       } else if (opts.tunnel) {
         log.info(`Mode: Tunnel (Cloudflare)`);
       } else {
-        log.info(`Mode: LAN (port ${port})`);
+        log.info(`Mode: LAN (${port === 0 ? "port auto" : `port ${port}`})`);
         if (advertisedHost) {
           log.info(`Advertised host: ${advertisedHost}`);
         }

@@ -15,6 +15,9 @@ export interface HandshakeMessage {
 }
 
 export const SESSION_REPLAY_CAPABILITY = "session_replay_v1";
+export const SLASH_CATALOG_CAPABILITY = "slash_catalog_v1";
+
+export type ModelReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface HandshakeOkMessage {
   type: "handshake_ok";
@@ -27,8 +30,93 @@ export interface HandshakeOkMessage {
 
 export interface SessionConfig {
   model?: string;
+  modelReasoningEffort?: ModelReasoningEffort;
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted";
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+}
+
+// ─── Slash Catalog ────────────────────────────────────────────────────
+
+export type SlashCommandKind = "workflow" | "bridge_action" | "client_action" | "insert_text";
+export type SlashAvailability = "enabled" | "disabled" | "hidden";
+export type SlashMenuPresentation = "list" | "grid";
+export type SlashOptionBadge = "default" | "recommended" | "experimental";
+export type SlashActionArgumentValue = string | number | boolean;
+export type SlashSessionConfigField =
+  | "model"
+  | "modelReasoningEffort"
+  | "approvalPolicy"
+  | "sandboxMode";
+
+export type SlashEffect =
+  | {
+      type: "set_session_config";
+      field: SlashSessionConfigField;
+      value: string;
+    }
+  | {
+      type: "set_input_text";
+      value: string;
+    }
+  | {
+      type: "clear_input_text";
+    };
+
+export interface SlashActionMeta {
+  inputText?: string;
+  arguments?: Record<string, SlashActionArgumentValue>;
+}
+
+export interface SlashMenuOption {
+  id: string;
+  label: string;
+  description?: string;
+  badges?: SlashOptionBadge[];
+  effects?: SlashEffect[];
+  next?: SlashMenuNode;
+}
+
+export interface SlashMenuNode {
+  title: string;
+  helperText?: string;
+  presentation: SlashMenuPresentation;
+  options: SlashMenuOption[];
+}
+
+export interface SlashCommandMeta {
+  id: string;
+  label: string;
+  description: string;
+  kind: SlashCommandKind;
+  availability: SlashAvailability;
+  disabledReason?: string;
+  searchTerms?: string[];
+  menu?: SlashMenuNode;
+  action?: SlashActionMeta;
+}
+
+export interface SlashCatalogMessage {
+  type: "slash_catalog";
+  capability: typeof SLASH_CATALOG_CAPABILITY;
+  adapter: SessionInfo["agentType"];
+  adapterVersion?: string;
+  catalogVersion: string;
+  defaults: SessionConfig;
+  commands: SlashCommandMeta[];
+}
+
+export interface SlashActionMessage {
+  type: "slash_action";
+  sessionId?: string;
+  commandId: string;
+  arguments?: Record<string, SlashActionArgumentValue>;
+}
+
+export interface SlashActionResultMessage {
+  type: "slash_action_result";
+  commandId: string;
+  ok: boolean;
+  message?: string;
 }
 
 // ─── Phone → Bridge ──────────────────────────────────────────────────
@@ -81,7 +169,8 @@ export type PhoneMessage =
   | DeleteSessionMessage
   | ListSessionsMessage
   | PingMessage
-  | SyncSessionMessage;
+  | SyncSessionMessage
+  | SlashActionMessage;
 
 // ─── Bridge → Phone ──────────────────────────────────────────────────
 
@@ -128,7 +217,9 @@ export type BridgeMessage =
   | FileContentMessage
   | PongMessage
   | ErrorResponseMessage
-  | SessionSyncCompleteMessage;
+  | SessionSyncCompleteMessage
+  | SlashCatalogMessage
+  | SlashActionResultMessage;
 
 // ─── E2E Encrypted Wire Format ───────────────────────────────────────
 

@@ -47,6 +47,7 @@ export class ClaudeAdapter implements AgentAdapter {
     sessionId: string,
     input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {

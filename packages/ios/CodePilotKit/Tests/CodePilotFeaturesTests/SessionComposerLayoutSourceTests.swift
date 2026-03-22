@@ -60,6 +60,59 @@ final class SessionComposerLayoutSourceTests: XCTestCase {
         )
     }
 
+    func testSlashMenuSourceUsesWorkflowProjectionInsteadOfHardCodedCommands() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Theme/SlashCommandMenu.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("workflow.projection("),
+            "The slash menu should render from projected workflow metadata rather than local hard-coded command lists."
+        )
+        XCTAssertFalse(
+            source.contains("enum SlashCommands"),
+            "The slash menu should no longer keep a hard-coded slash command catalog in app source."
+        )
+    }
+
+    func testComposerSourcesInstantiateSharedSlashWorkflowState() throws {
+        let sessionDetailSource = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
+        )
+        let projectDetailSource = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Projects/ProjectDetailView.swift"
+        )
+
+        XCTAssertTrue(
+            sessionDetailSource.contains("@State private var slashWorkflow = SlashWorkflowState()"),
+            "The session composer should keep a shared slash workflow state instance for recursive menus."
+        )
+        XCTAssertTrue(
+            projectDetailSource.contains("@State private var slashWorkflow = SlashWorkflowState()"),
+            "The new-session composer should reuse the same slash workflow state model as the session composer."
+        )
+        XCTAssertTrue(
+            sessionDetailSource.contains("workflow: $slashWorkflow")
+                && projectDetailSource.contains("workflow: $slashWorkflow"),
+            "Both composers should pass the shared workflow state into SlashCommandMenu."
+        )
+    }
+
+    func testSlashMenuSourceConstrainsHeightAndWrapsEntriesInVerticalScrollView() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Theme/SlashCommandMenu.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("ScrollView(.vertical"),
+            "The slash popup should wrap its entries in a vertical scroll view so long command lists remain reachable."
+        )
+        XCTAssertTrue(
+            source.contains(".frame(maxHeight: 320)"),
+            "The slash popup should cap its height so overflow scrolls inside the menu instead of breaking interaction."
+        )
+    }
+
     private func loadAppSource(at relativePath: String) throws -> String {
         let testsDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

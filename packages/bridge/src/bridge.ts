@@ -11,7 +11,13 @@
 import { resolve as resolvePath, relative } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 import { extname } from "node:path";
-import type { AgentEvent, PhoneMessage, SessionConfig, SessionInfo } from "@codepilot/protocol";
+import type {
+  AgentEvent,
+  PhoneMessage,
+  SessionConfig,
+  SessionInfo,
+  SlashCatalogMessage,
+} from "@codepilot/protocol";
 import type { AgentAdapter, SessionOptions } from "./adapters/types.js";
 import type { TransportClient, TransportServer } from "./transport/types.js";
 import { CodexAdapter } from "./adapters/codex.js";
@@ -20,6 +26,9 @@ import { LocalTransport } from "./transport/local.js";
 import { displayQRCode } from "./pairing/qrcode.js";
 import { loadOrCreatePairingMaterial } from "./pairing/state.js";
 import { SessionEventLogStore, type PersistedSessionEvent } from "./session-store/event-log.js";
+import { dispatchSlashAction } from "./slash/actions.js";
+import { buildSlashCatalog } from "./slash/catalog.js";
+import { detectAdapterVersion } from "./slash/version.js";
 import { log } from "./utils/logger.js";
 
 export interface BridgeOptions {
@@ -71,6 +80,9 @@ export class Bridge {
   private readonly replayStates = new Map<string, ReplayState>();
   private readonly sessionEventStore: SessionEventLogStore;
   private readonly deliveryQueueBySession = new Map<string, Promise<void>>();
+  private adapterVersion?: string;
+  private slashCatalog: SlashCatalogMessage | null = null;
+  private slashCatalogKey: string | null = null;
 
   constructor(options: BridgeOptions) {
     this.options = options;
@@ -104,6 +116,7 @@ export class Bridge {
 
     // 1. Resolve adapter
     this.adapter = await this.resolveAdapter();
+    this.adapterVersion = await detectAdapterVersion(this.adapter.name);
     log.success(`Agent: ${this.adapter.name}`);
 
     // 2. Start transport (interface-only, no cast)
@@ -115,7 +128,7 @@ export class Bridge {
       // Launch Cloudflare Tunnel and use tunnel URL in QR code
       log.info("Starting Cloudflare Tunnel...");
       const { startTunnel } = await import("./utils/tunnel.js");
-      const tunnel = await startTunnel(this.options.port);
+      const tunnel = await startTunnel(this.resolveLocalListenPort(pairingData));
       this.tunnelStop = tunnel.stop;
       log.success(`Tunnel URL: ${tunnel.url}`);
 
@@ -145,13 +158,7 @@ export class Bridge {
 
     // 4. Wire up event handlers
     this.transport.onConnect((client) => {
-      this.rememberClient(client);
-      log.connection(`Device connected: ${client.id}`);
-      // Send current session list
-      client.send({
-        type: "session_list",
-        sessions: Array.from(this.sessions.values()),
-      });
+      this.handleClientConnected(client);
     });
 
     this.transport.onDisconnect((client) => {
@@ -228,6 +235,40 @@ export class Bridge {
       case "sync_session":
         await this.handleSyncSession(client, message.sessionId, message.afterEventId);
         break;
+
+      case "slash_action":
+        this.handleSlashAction(client, message);
+        break;
+    }
+  }
+
+  private resolveLocalListenPort(pairingData: Record<string, unknown>): number {
+    const candidate = pairingData.port;
+    if (typeof candidate === "number" && Number.isInteger(candidate) && candidate > 0) {
+      return candidate;
+    }
+    if (typeof candidate === "string") {
+      const parsed = Number.parseInt(candidate, 10);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+    if (Number.isInteger(this.options.port) && this.options.port > 0) {
+      return this.options.port;
+    }
+    throw new Error("Bridge transport did not expose a valid local listen port");
+  }
+
+  private handleClientConnected(client: TransportClient): void {
+    this.rememberClient(client);
+    log.connection(`Device connected: ${client.id}`);
+    client.send({
+      type: "session_list",
+      sessions: Array.from(this.sessions.values()),
+    });
+    const slashCatalog = this.getSlashCatalog();
+    if (slashCatalog) {
+      client.send(slashCatalog);
     }
   }
 
@@ -244,16 +285,12 @@ export class Bridge {
       return;
     }
 
+    const sessionOptions = this.buildSessionOptions(config);
+
     // Start or find session
     let sid = sessionId ? await this.resolveCanonicalSessionId(sessionId) : undefined;
     if (!sid || !this.sessions.has(sid)) {
-      const opts: SessionOptions = {
-        workDir: this.options.workDir,
-        model: config?.model,
-        approvalPolicy: config?.approvalPolicy,
-        sandboxMode: config?.sandboxMode,
-      };
-      const session = await this.adapter.startSession(opts);
+      const session = await this.adapter.startSession(sessionOptions);
       sid = session.id;
       this.sessions.set(sid, session);
       log.info(`New session: ${sid}`);
@@ -281,7 +318,7 @@ export class Bridge {
 
     let executionError: unknown = null;
     try {
-      await this.adapter.execute(sid, text, onEvent);
+      await this.adapter.execute(sid, text, onEvent, config ? sessionOptions : undefined);
     } catch (err) {
       executionError = err;
     }
@@ -298,8 +335,62 @@ export class Bridge {
     }
   }
 
+  private buildSessionOptions(config?: SessionConfig): SessionOptions {
+    const options: SessionOptions = {
+      workDir: this.options.workDir,
+    };
+    if (config?.model !== undefined) {
+      options.model = config.model;
+    }
+    if (config?.modelReasoningEffort !== undefined) {
+      options.modelReasoningEffort = config.modelReasoningEffort;
+    }
+    if (config?.approvalPolicy !== undefined) {
+      options.approvalPolicy = config.approvalPolicy;
+    }
+    if (config?.sandboxMode !== undefined) {
+      options.sandboxMode = config.sandboxMode;
+    }
+    return options;
+  }
+
   private rememberClient(client: TransportClient): void {
     this.connectedClients.set(client.id, client);
+  }
+
+  private handleSlashAction(
+    client: TransportClient,
+    message: Extract<PhoneMessage, { type: "slash_action" }>,
+  ): void {
+    const slashCatalog = this.getSlashCatalog();
+    if (!slashCatalog) {
+      client.send({
+        type: "slash_action_result",
+        commandId: message.commandId,
+        ok: false,
+        message: "No slash catalog is available for the current adapter.",
+      });
+      return;
+    }
+
+    client.send(dispatchSlashAction(message, slashCatalog));
+  }
+
+  private getSlashCatalog(): SlashCatalogMessage | null {
+    if (!this.adapter) {
+      return null;
+    }
+
+    const cacheKey = `${this.adapter.name}:${this.adapterVersion ?? "fallback"}`;
+    if (!this.slashCatalog || this.slashCatalogKey !== cacheKey) {
+      this.slashCatalog = buildSlashCatalog({
+        adapter: this.adapter.name,
+        adapterVersion: this.adapterVersion,
+      });
+      this.slashCatalogKey = cacheKey;
+    }
+
+    return this.slashCatalog;
   }
 
   private clearReplayStateForClient(clientId: string): void {

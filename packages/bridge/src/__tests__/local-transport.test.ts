@@ -44,6 +44,67 @@ function delay(ms: number): Promise<void> {
 }
 
 describe("LocalTransport E2E sessions", () => {
+  it("reports the actual bound port when started with port 0", async () => {
+    const transport = new LocalTransport(0, "127.0.0.1");
+
+    try {
+      const { url, httpUrl, listenUrl, pairingData } = await transport.start();
+      const actualPort = Number(pairingData.port);
+
+      assert.ok(Number.isInteger(actualPort));
+      assert.ok(actualPort > 0);
+      assert.notEqual(actualPort, 0);
+      assert.equal(new URL(url).port, String(actualPort));
+      assert.equal(new URL(httpUrl).port, String(actualPort));
+      assert.equal(new URL(listenUrl).port, String(actualPort));
+    } finally {
+      await transport.stop();
+    }
+  });
+
+  it("allows multiple auto-port transports to run at the same time", async () => {
+    const firstTransport = new LocalTransport(0, "127.0.0.1");
+    const secondTransport = new LocalTransport(0, "127.0.0.1");
+
+    try {
+      const [first, second] = await Promise.all([
+        firstTransport.start(),
+        secondTransport.start(),
+      ]);
+
+      const firstPort = Number(first.pairingData.port);
+      const secondPort = Number(second.pairingData.port);
+
+      assert.ok(firstPort > 0);
+      assert.ok(secondPort > 0);
+      assert.notEqual(firstPort, secondPort);
+    } finally {
+      await Promise.all([
+        firstTransport.stop(),
+        secondTransport.stop(),
+      ]);
+    }
+  });
+
+  it("rejects cleanly when a fixed port is already in use", async () => {
+    const port = await getAvailablePort();
+    const firstTransport = new LocalTransport(port, "127.0.0.1");
+    const secondTransport = new LocalTransport(port, "127.0.0.1");
+
+    try {
+      await firstTransport.start();
+      await assert.rejects(
+        secondTransport.start(),
+        /already in use/,
+      );
+    } finally {
+      await Promise.all([
+        firstTransport.stop(),
+        secondTransport.stop(),
+      ]);
+    }
+  });
+
   it("reuses persisted pairing material across transport restarts", async () => {
     const root = await mkdtemp(join(tmpdir(), "codepilot-local-pairing-"));
     const filePath = join(root, "pairing.json");
@@ -115,7 +176,7 @@ describe("LocalTransport E2E sessions", () => {
       const [handshakeRaw] = await once(ws, "message");
       const handshake = JSON.parse(handshakeRaw.toString());
       assert.equal(handshake.type, "handshake_ok");
-      assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY]);
+      assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY, "slash_catalog_v1"]);
 
       ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
       await delay(75);

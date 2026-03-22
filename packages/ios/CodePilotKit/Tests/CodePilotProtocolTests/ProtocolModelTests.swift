@@ -86,6 +86,37 @@ final class ProtocolModelTests: XCTestCase {
             json: #"{"type":"sync_session","sessionId":"session-1","afterEventId":42}"#,
             expected: .syncSession(sessionId: "session-1", afterEventId: 42)
         )
+        try assertRoundTrip(
+            PhoneMessage.self,
+            json: #"{"type":"slash_action","sessionId":"session-1","commandId":"review","arguments":{"depth":"full","apply":false,"count":2}}"#,
+            expected: .slashAction(
+                .init(
+                    commandId: "review",
+                    sessionId: "session-1",
+                    arguments: [
+                        "depth": .string("full"),
+                        "apply": .bool(false),
+                        "count": .int(2),
+                    ]
+                )
+            )
+        )
+    }
+
+    func testCommandMessageRoundTripsConfigWithReasoningEffort() throws {
+        try assertRoundTrip(
+            PhoneMessage.self,
+            json: #"{"type":"command","text":"run tests","sessionId":"session-1","config":{"model":"gpt-5.4","modelReasoningEffort":"xhigh"}}"#,
+            expected: .command(
+                text: "run tests",
+                sessionId: "session-1",
+                config: .init(model: "gpt-5.4", modelReasoningEffort: "xhigh")
+            )
+        )
+    }
+
+    func testSessionConfigTreatsReasoningEffortAsMeaningfulConfig() {
+        XCTAssertFalse(SessionConfig(modelReasoningEffort: "high").isEmpty)
     }
 
     func testBridgeMessageRoundTripsRequiredVariants() throws {
@@ -134,6 +165,75 @@ final class ProtocolModelTests: XCTestCase {
                 sessionId: "session-1",
                 latestEventId: 24,
                 resolvedSessionId: "session-1a"
+            )
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"slash_action_result","commandId":"review","ok":false,"message":"Command is disabled"}"#,
+            expected: .slashActionResult(
+                .init(commandId: "review", ok: false, message: "Command is disabled")
+            )
+        )
+    }
+
+    func testBridgeMessageRoundTripsSlashCatalogVariant() throws {
+        let expectedMenu = SlashMenuNode(
+            title: "Select Model and Effort",
+            helperText: "Access legacy models by running codex -m <model_name> or in your config.toml",
+            presentation: .list,
+            options: [
+                .init(
+                    id: "gpt-5.4",
+                    label: "gpt-5.4",
+                    description: "Latest frontier agentic coding model.",
+                    badges: [.default],
+                    effects: nil,
+                    next: .init(
+                        title: "Select Reasoning Level for gpt-5.4",
+                        helperText: nil,
+                        presentation: .list,
+                        options: [
+                            .init(
+                                id: "xhigh",
+                                label: "Extra high",
+                                description: "Extra high reasoning depth for complex problems",
+                                badges: [.recommended],
+                                effects: [
+                                    .setSessionConfig(field: .model, value: "gpt-5.4"),
+                                    .setSessionConfig(field: .modelReasoningEffort, value: "xhigh"),
+                                ],
+                                next: nil
+                            ),
+                        ]
+                    )
+                ),
+            ]
+        )
+
+        let expectedCommand = SlashCommandMeta(
+            id: "model",
+            label: "/model",
+            description: "Choose what model and reasoning effort to use",
+            kind: .workflow,
+            availability: .enabled,
+            disabledReason: nil,
+            searchTerms: ["models", "reasoning"],
+            menu: expectedMenu,
+            action: nil
+        )
+
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"slash_catalog","capability":"slash_catalog_v1","adapter":"codex","adapterVersion":"0.116.0","catalogVersion":"codex-0.116.0","defaults":{"model":"gpt-5.4","modelReasoningEffort":"medium"},"commands":[{"id":"model","label":"/model","description":"Choose what model and reasoning effort to use","kind":"workflow","availability":"enabled","searchTerms":["models","reasoning"],"menu":{"title":"Select Model and Effort","helperText":"Access legacy models by running codex -m <model_name> or in your config.toml","presentation":"list","options":[{"id":"gpt-5.4","label":"gpt-5.4","description":"Latest frontier agentic coding model.","badges":["default"],"next":{"title":"Select Reasoning Level for gpt-5.4","presentation":"list","options":[{"id":"xhigh","label":"Extra high","description":"Extra high reasoning depth for complex problems","badges":["recommended"],"effects":[{"type":"set_session_config","field":"model","value":"gpt-5.4"},{"type":"set_session_config","field":"modelReasoningEffort","value":"xhigh"}]}]}}]}}]}"#,
+            expected: .slashCatalog(
+                .init(
+                    capability: BridgeCapability.slashCatalogV1,
+                    adapter: .codex,
+                    adapterVersion: "0.116.0",
+                    catalogVersion: "codex-0.116.0",
+                    defaults: .init(model: "gpt-5.4", modelReasoningEffort: "medium"),
+                    commands: [expectedCommand]
+                )
             )
         )
     }

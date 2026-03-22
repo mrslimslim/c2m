@@ -145,7 +145,7 @@ test("relay handshake enables encrypted messaging and authenticated lifecycle", 
 
   const handshake = JSON.parse(ws.sent.at(-1) ?? "{}");
   assert.equal(handshake.type, "handshake_ok");
-  assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY]);
+  assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY, "slash_catalog_v1"]);
   assert.equal(connected, 1);
 
   ws.sent.length = 0;

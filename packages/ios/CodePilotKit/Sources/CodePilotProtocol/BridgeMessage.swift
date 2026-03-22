@@ -2,6 +2,7 @@ import Foundation
 
 public enum BridgeCapability {
     public static let sessionReplayV1 = "session_replay_v1"
+    public static let slashCatalogV1 = "slash_catalog_v1"
 }
 
 public struct HandshakeOkMessage: Codable, Equatable, Sendable {
@@ -55,6 +56,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case pong(latencyMs: Int)
     case error(message: String)
     case sessionSyncComplete(sessionId: String, latestEventId: Int, resolvedSessionId: String?)
+    case slashCatalog(SlashCatalogMessage)
+    case slashActionResult(SlashActionResultMessage)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -72,6 +75,14 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case message
         case latestEventId
         case resolvedSessionId
+        case capability
+        case adapter
+        case adapterVersion
+        case catalogVersion
+        case defaults
+        case commands
+        case commandId
+        case ok
     }
 
     enum MessageType: String, Codable {
@@ -81,6 +92,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case pong
         case error
         case sessionSyncComplete = "session_sync_complete"
+        case slashCatalog = "slash_catalog"
+        case slashActionResult = "slash_action_result"
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,6 +125,25 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 latestEventId: try container.decode(Int.self, forKey: .latestEventId),
                 resolvedSessionId: try container.decodeIfPresent(String.self, forKey: .resolvedSessionId)
+            )
+        case .slashCatalog:
+            self = .slashCatalog(
+                .init(
+                    capability: try container.decode(String.self, forKey: .capability),
+                    adapter: try container.decode(AgentType.self, forKey: .adapter),
+                    adapterVersion: try container.decodeIfPresent(String.self, forKey: .adapterVersion),
+                    catalogVersion: try container.decode(String.self, forKey: .catalogVersion),
+                    defaults: try container.decode(SessionConfig.self, forKey: .defaults),
+                    commands: try container.decode([SlashCommandMeta].self, forKey: .commands)
+                )
+            )
+        case .slashActionResult:
+            self = .slashActionResult(
+                .init(
+                    commandId: try container.decode(String.self, forKey: .commandId),
+                    ok: try container.decode(Bool.self, forKey: .ok),
+                    message: try container.decodeIfPresent(String.self, forKey: .message)
+                )
             )
         }
     }
@@ -147,6 +179,19 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(sessionId, forKey: .sessionId)
             try container.encode(latestEventId, forKey: .latestEventId)
             try container.encodeIfPresent(resolvedSessionId, forKey: .resolvedSessionId)
+        case let .slashCatalog(message):
+            try container.encode(MessageType.slashCatalog, forKey: .type)
+            try container.encode(message.capability, forKey: .capability)
+            try container.encode(message.adapter, forKey: .adapter)
+            try container.encodeIfPresent(message.adapterVersion, forKey: .adapterVersion)
+            try container.encode(message.catalogVersion, forKey: .catalogVersion)
+            try container.encode(message.defaults, forKey: .defaults)
+            try container.encode(message.commands, forKey: .commands)
+        case let .slashActionResult(message):
+            try container.encode(MessageType.slashActionResult, forKey: .type)
+            try container.encode(message.commandId, forKey: .commandId)
+            try container.encode(message.ok, forKey: .ok)
+            try container.encodeIfPresent(message.message, forKey: .message)
         }
     }
 }

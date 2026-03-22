@@ -9,6 +9,7 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 - Relay is supported and should be verified, but it is not the default self-use path.
 - Saved projects persist across launches, and bridge-side pairing material now stays stable by default for the same working directory.
 - Re-scanning may still be required if the bridge advertises a different reachable host, uses a different working directory, or the pairing state is intentionally reset.
+- The slash command menu is protocol-driven. The bridge chooses the slash catalog by adapter type and detected adapter version.
 
 ## Recommended Test Environment
 
@@ -38,13 +39,16 @@ node packages/bridge/dist/bin/codepilot.js --relay --dir /absolute/path/to/test-
 ```
 
 4. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port` or `relay`/`channel`, plus `bridge_pubkey` and `otp`.
-5. Install the iOS app on a physical device.
-6. If you want a clean run, delete any previously saved projects in the app before starting.
+5. If you are validating Codex slash commands, also confirm `codex --version` matches the catalog you expect. The current baseline is `codex-cli 0.116.0`.
+6. Install the iOS app on a physical device.
+7. If you want a clean run, delete any previously saved projects in the app before starting.
 
 ## Pass Criteria
 
 - Pairing succeeds from QR scan and from pasted or manually entered payloads.
 - The app can connect, show sessions, start a new session, continue a session, cancel a busy turn, and request a file.
+- The slash menu reflects the bridge-provided catalog, including nested workflows, current/default config badges, and disabled reasons.
+- `/model` updates both `model` and `modelReasoningEffort`, and `/permissions` updates `approvalPolicy` and `sandboxMode`.
 - Diagnostics are useful and redact sensitive values such as `token`, `otp`, and ciphertext.
 - Relay and LAN both work as intended for the currently supported single-active-connection runtime model.
 
@@ -265,7 +269,38 @@ This is intentional behavior in the current self-use runtime model.
 - The file viewer opens and shows the requested contents.
 - The file content belongs to the active project and active session, not a previously connected project.
 
-## Scenario 11: Reconnect Behavior
+## Scenario 11: Slash Workflow Acceptance
+
+**Setup**
+
+- A project is connected over LAN or Relay.
+- The bridge advertises `slash_catalog_v1`.
+- For Codex, the version probe currently reports `codex-cli 0.116.0`.
+
+**Steps**
+
+1. Open a session composer or the new-session composer.
+2. Type `/` and verify the menu lists protocol-driven commands such as `/model`, `/permissions`, and `/new`.
+3. Confirm commands that are not implemented yet, such as `/review`, appear disabled with a reason instead of acting enabled.
+4. Type `/model` or tap `/model`.
+5. Choose a model such as `gpt-5.4`.
+6. In the next layer, choose a reasoning level such as `Extra high`.
+7. Verify config chips now reflect both the model and the reasoning effort.
+8. Re-open the slash menu and choose `/permissions`.
+9. Pick an approval policy, then pick a sandbox mode.
+10. Verify those config chips update as well.
+11. From an existing session, invoke `/new`, type a follow-up prompt, and send it.
+
+**Expected**
+
+- The slash menu is populated from bridge metadata rather than a client-side hard-coded list.
+- `/model` renders as a nested workflow, not a flat chip picker.
+- Choosing a reasoning level updates both `model` and `modelReasoningEffort`.
+- Choosing `/permissions` updates both `approvalPolicy` and `sandboxMode`.
+- Disabled commands remain visible but cannot be executed.
+- `/new` is handled as a client action. In session detail, the next send starts a new session instead of continuing the current one.
+
+## Scenario 12: Reconnect Behavior
 
 **Setup**
 
@@ -285,7 +320,7 @@ This is intentional behavior in the current self-use runtime model.
 - After connectivity returns, the app can reconnect or be manually reconnected.
 - The diagnostics timeline captures the transition clearly enough to debug the failure.
 
-## Scenario 12: Diagnostics Redaction
+## Scenario 13: Diagnostics Redaction
 
 **Setup**
 

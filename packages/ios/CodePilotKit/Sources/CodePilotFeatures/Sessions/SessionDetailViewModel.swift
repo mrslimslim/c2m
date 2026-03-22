@@ -87,6 +87,21 @@ public final class SessionDetailViewModel {
         }
     }
 
+    public func sendSlashAction(
+        commandId: String,
+        arguments: [String: SlashActionArgumentValue]? = nil
+    ) throws {
+        try sender.send(
+            .slashAction(
+                .init(
+                    commandId: commandId,
+                    sessionId: currentSessionId,
+                    arguments: arguments
+                )
+            )
+        )
+    }
+
     public func fileState(for path: String) -> FileState? {
         guard let currentSessionId else {
             return nil

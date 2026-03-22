@@ -43,18 +43,25 @@ public struct HandshakeMessage: Codable, Equatable, Sendable {
 
 public struct SessionConfig: Codable, Equatable, Sendable {
     public var model: String?
+    public var modelReasoningEffort: String?
     public var approvalPolicy: String?
     public var sandboxMode: String?
 
-    public init(model: String? = nil, approvalPolicy: String? = nil, sandboxMode: String? = nil) {
+    public init(
+        model: String? = nil,
+        modelReasoningEffort: String? = nil,
+        approvalPolicy: String? = nil,
+        sandboxMode: String? = nil
+    ) {
         self.model = model
+        self.modelReasoningEffort = modelReasoningEffort
         self.approvalPolicy = approvalPolicy
         self.sandboxMode = sandboxMode
     }
 
     /// Returns true if all fields are nil (no configuration set).
     public var isEmpty: Bool {
-        model == nil && approvalPolicy == nil && sandboxMode == nil
+        model == nil && modelReasoningEffort == nil && approvalPolicy == nil && sandboxMode == nil
     }
 }
 
@@ -62,6 +69,7 @@ public struct SessionConfig: Codable, Equatable, Sendable {
 
 public enum PhoneMessage: Codable, Equatable, Sendable {
     case command(text: String, sessionId: String?, config: SessionConfig?)
+    case slashAction(SlashActionMessage)
     case cancel(sessionId: String)
     case fileRequest(path: String, sessionId: String)
     case deleteSession(sessionId: String)
@@ -77,10 +85,13 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case ts
         case config
         case afterEventId
+        case commandId
+        case arguments
     }
 
     enum MessageType: String, Codable {
         case command
+        case slashAction = "slash_action"
         case cancel
         case fileRequest = "file_req"
         case deleteSession = "delete_session"
@@ -99,6 +110,14 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
                 text: try container.decode(String.self, forKey: .text),
                 sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId),
                 config: try container.decodeIfPresent(SessionConfig.self, forKey: .config)
+            )
+        case .slashAction:
+            self = .slashAction(
+                .init(
+                    commandId: try container.decode(String.self, forKey: .commandId),
+                    sessionId: try container.decodeIfPresent(String.self, forKey: .sessionId),
+                    arguments: try container.decodeIfPresent([String: SlashActionArgumentValue].self, forKey: .arguments)
+                )
             )
         case .cancel:
             self = .cancel(sessionId: try container.decode(String.self, forKey: .sessionId))
@@ -132,6 +151,11 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
             if let config, !config.isEmpty {
                 try container.encode(config, forKey: .config)
             }
+        case let .slashAction(message):
+            try container.encode(MessageType.slashAction, forKey: .type)
+            try container.encodeIfPresent(message.sessionId, forKey: .sessionId)
+            try container.encode(message.commandId, forKey: .commandId)
+            try container.encodeIfPresent(message.arguments, forKey: .arguments)
         case let .cancel(sessionId):
             try container.encode(MessageType.cancel, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)

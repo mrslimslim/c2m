@@ -12,7 +12,12 @@ import { networkInterfaces } from "node:os";
 import { randomBytes } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SESSION_REPLAY_CAPABILITY, type BridgeMessage, type PhoneMessage } from "@codepilot/protocol";
+import {
+  SESSION_REPLAY_CAPABILITY,
+  SLASH_CATALOG_CAPABILITY,
+  type BridgeMessage,
+  type PhoneMessage,
+} from "@codepilot/protocol";
 import type { TransportClient, TransportServer } from "./types.js";
 import {
   generateKeyPair,
@@ -24,7 +29,7 @@ import {
 import type { PairingMaterial } from "../pairing/state.js";
 import { log } from "../utils/logger.js";
 
-const DEFAULT_PORT = 19260;
+const DEFAULT_PORT = 0;
 
 /** Valid PhoneMessage types */
 const VALID_MESSAGE_TYPES = new Set([
@@ -35,6 +40,7 @@ const VALID_MESSAGE_TYPES = new Set([
   "list_sessions",
   "ping",
   "sync_session",
+  "slash_action",
 ]);
 
 /**
@@ -76,6 +82,17 @@ export function validatePhoneMessage(data: unknown): PhoneMessage | null {
     case "sync_session":
       if (typeof msg.sessionId !== "string") return null;
       if (typeof msg.afterEventId !== "number") return null;
+      return msg as unknown as PhoneMessage;
+
+    case "slash_action":
+      if (typeof msg.commandId !== "string" || msg.commandId.length === 0) return null;
+      if (msg.sessionId !== undefined && typeof msg.sessionId !== "string") return null;
+      if (
+        msg.arguments !== undefined &&
+        (typeof msg.arguments !== "object" || msg.arguments === null || Array.isArray(msg.arguments))
+      ) {
+        return null;
+      }
       return msg as unknown as PhoneMessage;
 
     default:
@@ -130,6 +147,18 @@ export class LocalTransport implements TransportServer {
     listenUrl: string;
   }> {
     return new Promise((resolvePromise, reject) => {
+      let startupSettled = false;
+      const rejectStartup = (error: Error) => {
+        const normalizedError = this.normalizeStartupError(error);
+        if (startupSettled) {
+          return;
+        }
+        startupSettled = true;
+        this.wss?.off("error", rejectStartup);
+        this.httpServer?.off("error", rejectStartup);
+        reject(normalizedError);
+      };
+
       // Create HTTP server to serve test client
       this.httpServer = createServer((req, res) => {
         if (
@@ -168,8 +197,27 @@ export class LocalTransport implements TransportServer {
 
       // Create WebSocket server attached to HTTP server
       this.wss = new WebSocketServer({ server: this.httpServer });
+      this.wss.once("error", rejectStartup);
+      this.httpServer.once("error", rejectStartup);
 
       this.httpServer.listen(this.port, this.host, () => {
+        const address = this.httpServer?.address();
+        if (!address || typeof address === "string") {
+          rejectStartup(new Error("Failed to resolve the local bridge address"));
+          return;
+        }
+
+        this.port = address.port;
+        startupSettled = true;
+        this.wss?.off("error", rejectStartup);
+        this.httpServer?.off("error", rejectStartup);
+        this.wss?.on("error", (error) => {
+          log.error(`WebSocket server error: ${error.message}`);
+        });
+        this.httpServer?.on("error", (error) => {
+          log.error(`HTTP server error: ${error.message}`);
+        });
+
         const isIPv6 = this.host.includes(":");
         const localIp = this.getLocalIp(isIPv6);
         const advertisedHost = this.advertisedHost ?? localIp;
@@ -188,8 +236,6 @@ export class LocalTransport implements TransportServer {
         };
         resolvePromise({ url, httpUrl, pairingData, listenUrl });
       });
-
-      this.httpServer.on("error", reject);
 
       this.wss.on("connection", (ws) => {
         const clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -258,7 +304,7 @@ export class LocalTransport implements TransportServer {
                     type: "handshake_ok",
                     encrypted: true,
                     clientId,
-                    capabilities: [SESSION_REPLAY_CAPABILITY],
+                    capabilities: [SESSION_REPLAY_CAPABILITY, SLASH_CATALOG_CAPABILITY],
                   }));
 
                   const tc = this.makeTransportClient(client);
@@ -439,5 +485,18 @@ export class LocalTransport implements TransportServer {
     }
 
     return trimmed.replace(/^\[(.*)\]$/, "$1");
+  }
+
+  private normalizeStartupError(error: Error): Error {
+    if (this.isErrnoException(error) && error.code === "EADDRINUSE") {
+      return new Error(
+        `Port ${this.port} is already in use on ${this.host}. Stop the other bridge or retry with --port auto.`,
+      );
+    }
+    return error;
+  }
+
+  private isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+    return typeof error === "object" && error !== null && "code" in error;
   }
 }

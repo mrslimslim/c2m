@@ -222,6 +222,48 @@ final class SessionRoutingTests: XCTestCase {
         XCTAssertNil(fileStore.fileState(for: "README.md", sessionId: temporarySession.id))
     }
 
+    func testPlaceholderSessionRemapMigratesTimelineDraftFileAndActiveSelection() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+
+        sessionStore.updateState(for: "temp-session", state: .thinking)
+        sessionStore.setActiveSession(id: "temp-session")
+        sessionStore.setDraft("continue with refactor", for: "temp-session")
+        timelineStore.appendUserCommand("run tests", sessionId: "temp-session", timestamp: 1_700_000_105)
+        fileStore.markRequested(path: "README.md", sessionId: "temp-session")
+        fileStore.routeFileContent(path: "README.md", content: "hello", language: "markdown")
+
+        let stableSession = makeSession(
+            id: "stable-session",
+            state: .thinking,
+            createdAt: 1_700_000_100,
+            lastActiveAt: 1_700_000_120
+        )
+        router.handle(.sessionList(sessions: [stableSession]))
+
+        XCTAssertEqual(sessionStore.activeSessionId, stableSession.id)
+        XCTAssertEqual(sessionStore.resolvedSessionId(for: "temp-session"), stableSession.id)
+        XCTAssertEqual(sessionStore.draft(for: stableSession.id), "continue with refactor")
+        XCTAssertEqual(
+            timelineStore.timeline(for: stableSession.id).map(\.kind),
+            [.userCommand(text: "run tests")]
+        )
+        XCTAssertEqual(timelineStore.timeline(for: "temp-session"), [])
+        XCTAssertEqual(
+            fileStore.fileState(for: "README.md", sessionId: stableSession.id)?.content,
+            "hello"
+        )
+        XCTAssertNil(fileStore.fileState(for: "README.md", sessionId: "temp-session"))
+    }
+
     func testTimelineCreatesItemForEveryAgentEventType() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()

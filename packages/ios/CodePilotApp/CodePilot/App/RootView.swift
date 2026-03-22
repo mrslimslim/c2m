@@ -48,12 +48,15 @@ final class AppModel: ObservableObject {
     @Published private(set) var currentConnectionSummary: String = "Disconnected"
     @Published private(set) var slotStates: [String: String] = [:]
     @Published private(set) var sessionNavigationTargets: [String: String] = [:]
+    @Published private(set) var slashCatalogsByConnectionID: [String: SlashCatalogMessage] = [:]
+    @Published private(set) var latestSlashActionResultsByConnectionID: [String: SlashActionResultMessage] = [:]
     @Published var latestErrorMessage: String?
 
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
     private let diagnosticsStore: DiagnosticsStore
+    private let slashCatalogStore: SlashCatalogStore
     private let diagnosticsViewModel: DiagnosticsViewModel
     private let savedConnectionStore: SavedConnectionStore
     private let conversationSnapshotStore: ConversationSnapshotStore
@@ -82,6 +85,7 @@ final class AppModel: ObservableObject {
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
         let diagnosticsStore = DiagnosticsStore()
+        let slashCatalogStore = SlashCatalogStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
         let savedConnectionStore = SavedConnectionStore()
         let conversationSnapshotStore = ConversationSnapshotStore()
@@ -113,6 +117,7 @@ final class AppModel: ObservableObject {
             timelineStore: timelineStore,
             fileStore: fileStore,
             diagnosticsStore: diagnosticsStore,
+            slashCatalogStore: slashCatalogStore,
             diagnosticsViewModel: diagnosticsViewModel,
             savedConnectionStore: savedConnectionStore,
             conversationSnapshotStore: conversationSnapshotStore,
@@ -151,6 +156,7 @@ final class AppModel: ObservableObject {
         timelineStore: TimelineStore,
         fileStore: FileStore,
         diagnosticsStore: DiagnosticsStore,
+        slashCatalogStore: SlashCatalogStore,
         diagnosticsViewModel: DiagnosticsViewModel,
         savedConnectionStore: SavedConnectionStore,
         conversationSnapshotStore: ConversationSnapshotStore,
@@ -167,6 +173,7 @@ final class AppModel: ObservableObject {
         self.timelineStore = timelineStore
         self.fileStore = fileStore
         self.diagnosticsStore = diagnosticsStore
+        self.slashCatalogStore = slashCatalogStore
         self.diagnosticsViewModel = diagnosticsViewModel
         self.savedConnectionStore = savedConnectionStore
         self.conversationSnapshotStore = conversationSnapshotStore
@@ -237,7 +244,9 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
-            diagnostics: diagnosticsStore
+            diagnostics: diagnosticsStore,
+            slashCatalogStore: slashCatalogStore,
+            connectionID: id
         )
 
         var slot = ConnectionSlot(
@@ -440,6 +449,7 @@ final class AppModel: ObservableObject {
         for offset in offsets {
             let id = connections[offset].id
             disconnectSavedConnection(id: id)
+            slashCatalogStore.removeConnection(id: id)
         }
         connections.remove(atOffsets: offsets)
         connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: connectionsViewModel.selectedSavedConnectionID)
@@ -449,6 +459,7 @@ final class AppModel: ObservableObject {
 
     func deleteSavedConnection(id: String) {
         disconnectSavedConnection(id: id)
+        slashCatalogStore.removeConnection(id: id)
         var connections = connectionsViewModel.savedConnections
         connections.removeAll { $0.id == id }
         connectionsViewModel.replaceSavedConnections(connections, selectedConnectionID: connectionsViewModel.selectedSavedConnectionID)
@@ -462,7 +473,8 @@ final class AppModel: ObservableObject {
     }
 
     func session(for sessionID: String) -> SessionInfo? {
-        sessions.first(where: { $0.id == sessionID })
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return sessions.first(where: { $0.id == resolvedSessionID })
     }
 
     /// Send a command without a sessionId — Bridge will create a new session.
@@ -480,17 +492,20 @@ final class AppModel: ObservableObject {
     }
 
     func timeline(for sessionID: String) -> [TimelineItem] {
-        timelineStore.timeline(for: sessionID)
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return timelineStore.timeline(for: resolvedSessionID)
     }
 
     func files(for sessionID: String) -> [FileState] {
-        fileStore.files(for: sessionID)
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return fileStore.files(for: resolvedSessionID)
     }
 
     func makeSessionDetailViewModel(sessionID: String) -> SessionDetailViewModel {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
         // Find the controller for this session's connection
         let sender: PhoneMessageSending
-        if let slotID = sessionToSlotID[sessionID], let slot = slots[slotID] {
+        if let slotID = sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[sessionID], let slot = slots[slotID] {
             sender = slot.controller
         } else if let firstConnected = slots.values.first(where: {
             if case .connected = $0.controller.state { return true }
@@ -506,7 +521,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
-            sessionId: sessionID
+            sessionId: resolvedSessionID
         )
     }
 
@@ -532,6 +547,47 @@ final class AppModel: ObservableObject {
         sessionNavigationTargets[connectionID]
     }
 
+    func slashCatalog(for connectionID: String) -> SlashCatalogMessage? {
+        slashCatalogsByConnectionID[connectionID]
+    }
+
+    func slashCatalog(forSessionID sessionID: String?) -> SlashCatalogMessage? {
+        guard let sessionID else {
+            guard let activeSlotID else { return nil }
+            return slashCatalog(for: activeSlotID)
+        }
+
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        if let connectionID = sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[sessionID] {
+            return slashCatalog(for: connectionID)
+        }
+
+        guard let activeSlotID else { return nil }
+        return slashCatalog(for: activeSlotID)
+    }
+
+    func connectionID(forSessionID sessionID: String) -> String? {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[sessionID] ?? activeSlotID
+    }
+
+    func latestSlashActionResult(for connectionID: String) -> SlashActionResultMessage? {
+        latestSlashActionResultsByConnectionID[connectionID]
+    }
+
+    func sendSlashAction(_ message: SlashActionMessage, connectionID: String) throws {
+        guard
+            let slot = slots[connectionID],
+            case .connected = slot.controller.state
+        else {
+            throw AppModelError.noActiveConnection
+        }
+
+        try slot.controller.send(.slashAction(message))
+        latestErrorMessage = nil
+        refreshPublishedState()
+    }
+
     func consumeSessionNavigationTarget(for connectionID: String) {
         clearSessionNavigationTarget(for: connectionID)
     }
@@ -552,6 +608,8 @@ final class AppModel: ObservableObject {
             states[saved.id] = slots[saved.id]?.summary ?? "Disconnected"
         }
         slotStates = states
+        slashCatalogsByConnectionID = slashCatalogStore.catalogsByConnectionID
+        latestSlashActionResultsByConnectionID = slashCatalogStore.latestActionResultsByConnectionID
 
         if let activeSlotID, let slot = slots[activeSlotID] {
             currentConnectionSummary = slot.summary
@@ -676,7 +734,7 @@ final class AppModel: ObservableObject {
         case let .error(message):
             handleReplayProtocolErrorIfNeeded(slotID: slotID, message: message)
 
-        case .fileContent, .pong:
+        case .fileContent, .pong, .slashCatalog, .slashActionResult:
             break
         }
 
@@ -1038,6 +1096,7 @@ extension AppModel {
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
         let diagnosticsStore = DiagnosticsStore()
+        let slashCatalogStore = SlashCatalogStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
         let previewDefaults = UserDefaults(suiteName: "AppModelPreview.\(UUID().uuidString)") ?? .standard
         let previewSecretStore = KeychainSecretStore(service: "com.codepilot.preview.\(UUID().uuidString)")
@@ -1060,6 +1119,7 @@ extension AppModel {
             timelineStore: timelineStore,
             fileStore: fileStore,
             diagnosticsStore: diagnosticsStore,
+            slashCatalogStore: slashCatalogStore,
             diagnosticsViewModel: diagnosticsViewModel,
             savedConnectionStore: savedConnectionStore,
             conversationSnapshotStore: conversationSnapshotStore,

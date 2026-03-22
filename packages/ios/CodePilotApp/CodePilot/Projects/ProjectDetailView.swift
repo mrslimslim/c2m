@@ -472,6 +472,7 @@ private struct NewSessionSheet: View {
     let connectionID: String
     @State private var command: String = ""
     @State private var sessionConfig = SessionConfig()
+    @State private var slashWorkflow = SlashWorkflowState()
     @State private var showSlashMenu = false
     @State private var errorMessage: String?
     @FocusState private var isFocused: Bool
@@ -549,15 +550,19 @@ private struct NewSessionSheet: View {
                         )
                         .onChange(of: command) { _, newValue in
                             withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                                showSlashMenu = newValue.hasPrefix("/")
+                                showSlashMenu = newValue.hasPrefix("/") || slashWorkflow.canGoBack
                             }
                         }
 
                     // Slash menu below input
                     if showSlashMenu {
                         SlashCommandMenu(
+                            workflow: $slashWorkflow,
                             config: $sessionConfig,
                             inputText: $command,
+                            sessionID: nil,
+                            onBridgeAction: handleSlashBridgeAction,
+                            onClientAction: handleSlashClientAction,
                             onDismiss: { showSlashMenu = false }
                         )
                         .transition(.asymmetric(
@@ -636,9 +641,13 @@ private struct NewSessionSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .onAppear {
+            slashWorkflow.updateCatalog(slashCatalog)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 isFocused = true
             }
+        }
+        .onChange(of: slashCatalog) { _, newCatalog in
+            slashWorkflow.updateCatalog(newCatalog)
         }
     }
 
@@ -672,6 +681,31 @@ private struct NewSessionSheet: View {
             }
         } catch {
             errorMessage = "Failed to send command: \(error.localizedDescription)"
+        }
+    }
+
+    private var slashCatalog: SlashCatalogMessage? {
+        appModel.slashCatalog(for: connectionID)
+    }
+
+    private func handleSlashBridgeAction(_ message: SlashActionMessage) {
+        do {
+            try appModel.sendSlashAction(message, connectionID: connectionID)
+            errorMessage = nil
+        } catch {
+            errorMessage = "Failed to run slash action: \(error.localizedDescription)"
+        }
+    }
+
+    private func handleSlashClientAction(_ commandID: String) {
+        switch commandID {
+        case "new":
+            command = ""
+            sessionConfig = .init()
+            showSlashMenu = false
+            isFocused = true
+        default:
+            break
         }
     }
 

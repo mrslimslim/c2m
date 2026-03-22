@@ -69,7 +69,7 @@ pnpm run build
 ### 3.1 基本启动
 
 ```bash
-# 自动检测代理，局域网模式，默认端口 19260
+# 自动检测代理，局域网模式，默认自动选择可用端口
 node packages/bridge/dist/bin/codepilot.js
 ```
 
@@ -80,7 +80,7 @@ node packages/bridge/dist/bin/codepilot.js [options]
 
 Options:
   -a, --agent <type>      代理类型: codex | claude | auto (默认: auto)
-  -p, --port <number>     WebSocket 端口 (默认: 19260)
+  -p, --port <value>      WebSocket 端口 (默认: auto)
   --advertised-host <address>  覆盖 QR / pairing 输出中的主机地址
   -d, --dir <path>        工作目录 (默认: 当前目录)
   --relay                 启用 Relay 跨网络模式
@@ -97,6 +97,9 @@ node packages/bridge/dist/bin/codepilot.js --agent claude --dir ~/my-project
 
 # 自定义端口
 node packages/bridge/dist/bin/codepilot.js --port 8080
+
+# 自动分配可用端口
+node packages/bridge/dist/bin/codepilot.js --port auto
 
 # 使用固定可达主机名生成 QR / pairing 信息
 node packages/bridge/dist/bin/codepilot.js --advertised-host codepilot.tailnet.ts.net
@@ -120,7 +123,7 @@ node packages/bridge/dist/bin/codepilot.js --relay-url ws://localhost:8787
 
 [codepilot] Working directory: /Users/you/project
 [codepilot] Agent: claude
-[codepilot] Mode: LAN (port 19260)
+[codepilot] Mode: LAN (port auto)
 [codepilot] Pairing state: /Users/you/.codepilot/pairing/abcd1234ef567890.json
 
 ✓ Agent: claude
@@ -173,7 +176,7 @@ node packages/bridge/dist/bin/codepilot.js --relay-url ws://localhost:8787
 
 如果未使用自动填充 URL，可在连接面板手动输入：
 - **Host IP**: Bridge 所在机器的局域网 IP
-- **Port**: 默认 19260
+- **Port**: 终端输出里的实际监听端口
 - **Token**: 终端输出的 Token 值
 
 点击 Connect 即可。此方式使用 Legacy Token 认证，不启用 E2E 加密。
@@ -260,7 +263,7 @@ node packages/bridge/dist/bin/codepilot.js --relay-url wss://codepilot-relay.you
 npm i -g wscat
 
 # 连接
-wscat -c ws://192.168.1.x:19260
+wscat -c ws://192.168.1.x:<port>
 
 # 发送认证
 > {"type": "auth", "token": "终端输出的token"}
@@ -286,7 +289,7 @@ wscat -c ws://192.168.1.x:19260
 ### 7.3 消息校验
 
 ```bash
-wscat -c ws://192.168.1.x:19260
+wscat -c ws://192.168.1.x:<port>
 > {"type": "auth", "token": "xxx"}
 # 认证后发送畸形消息
 > {"type": "command"}
@@ -329,19 +332,20 @@ Error: Cannot find module '.../dist/bin/codepilot.js'
 
 ---
 
-### Q: `Error: listen EADDRINUSE :::19260`
+### Q: `Error: listen EADDRINUSE :::<port>`
 
-**原因**：端口被占用（可能上次进程未正常退出）。
+**原因**：你显式指定的端口已被占用，或另一条 bridge 还在使用同一个固定端口。
 **解决**：
 
 ```bash
 # 查看占用进程
-lsof -i :19260
+lsof -i :<port>
 
 # 杀死进程
 kill -9 <PID>
 
-# 或换端口
+# 或换成自动端口 / 其他固定端口
+node packages/bridge/dist/bin/codepilot.js --port auto
 node packages/bridge/dist/bin/codepilot.js --port 19261
 ```
 

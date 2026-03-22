@@ -188,6 +188,52 @@ final class SessionDetailViewModelTests: XCTestCase {
         fileStore.routeFileContent(path: "Sources/App.swift", content: "unexpected", language: "swift")
         XCTAssertNil(viewModel.fileState(for: "Sources/App.swift"))
     }
+
+    func testSendSlashActionUsesResolvedSessionID() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+
+        let temporarySession = makeSession(id: "temp-session", state: .idle)
+        sessionStore.upsert(temporarySession)
+        _ = sessionStore.applySessionList([makeSession(id: "stable-session", state: .idle)])
+        sessionStore.setActiveSession(id: temporarySession.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore
+        )
+
+        try viewModel.sendSlashAction(commandId: "review")
+
+        XCTAssertEqual(
+            sender.messages,
+            [.slashAction(.init(commandId: "review", sessionId: "stable-session"))]
+        )
+    }
+
+    func testSendSlashActionWithoutActiveSessionUsesNilSessionID() throws {
+        let sender = MockPhoneMessageSender()
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: SessionStore(),
+            timelineStore: TimelineStore(),
+            fileStore: FileStore()
+        )
+
+        try viewModel.sendSlashAction(
+            commandId: "review",
+            arguments: ["depth": .string("full")]
+        )
+
+        XCTAssertEqual(
+            sender.messages,
+            [.slashAction(.init(commandId: "review", sessionId: nil, arguments: ["depth": .string("full")]))]
+        )
+    }
 }
 
 private enum MockPhoneMessageSenderError: Error {

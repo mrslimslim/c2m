@@ -80,6 +80,17 @@ describe("validatePhoneMessage – valid messages", () => {
     assert.notEqual(result, null);
     assert.equal((result as any).type, "sync_session");
   });
+
+  it("accepts a valid slash_action message", () => {
+    const result = validatePhoneMessage({
+      type: "slash_action",
+      sessionId: "sess-1",
+      commandId: "review",
+      arguments: { depth: "full", apply: false, count: 2 },
+    });
+    assert.notEqual(result, null);
+    assert.equal((result as any).type, "slash_action");
+  });
 });
 
 // ─── Missing required fields ────────────────────────────────────────────────
@@ -135,6 +146,24 @@ describe("validatePhoneMessage – missing required fields", () => {
         type: "sync_session",
         sessionId: "sess-1",
         afterEventId: "not-a-number",
+      }),
+      null,
+    );
+  });
+
+  it("rejects slash_action without commandId", () => {
+    assert.equal(
+      validatePhoneMessage({ type: "slash_action", sessionId: "sess-1" }),
+      null,
+    );
+  });
+
+  it("rejects slash_action with non-object arguments", () => {
+    assert.equal(
+      validatePhoneMessage({
+        type: "slash_action",
+        commandId: "review",
+        arguments: "full",
       }),
       null,
     );

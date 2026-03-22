@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AgentEvent, SessionInfo } from "@codepilot/protocol";
+import type { AgentEvent, SessionConfig, SessionInfo } from "@codepilot/protocol";
 import type { AgentAdapter, SessionOptions } from "../adapters/types.js";
 import { Bridge } from "../bridge.js";
 import { SessionEventLogStore } from "../session-store/event-log.js";
@@ -19,11 +19,14 @@ interface TestClient {
 interface BridgeInternals {
   transport: { broadcast: (message?: unknown) => void };
   adapter: AgentAdapter;
+  adapterVersion?: string;
   handleCommand: (
     client: TestClient,
     text: string,
     sessionId?: string,
+    config?: SessionConfig,
   ) => Promise<void>;
+  handleClientConnected: (client: TestClient) => void;
   handleMessage: (
     client: TestClient,
     message: Record<string, unknown>,
@@ -138,9 +141,12 @@ class FakeAdapter implements AgentAdapter {
   sessionMap = new Map<string, SessionInfo>();
   lastExecuteSessionId: string | null = null;
   canceledSessionIds: string[] = [];
+  lastStartOptions: SessionOptions | null = null;
+  lastExecuteOptions: SessionOptions | undefined;
 
   async startSession(opts: SessionOptions): Promise<SessionInfo> {
     this.startSessionCalls += 1;
+    this.lastStartOptions = opts;
     const session: SessionInfo = {
       id: "temp-session",
       agentType: "codex",
@@ -157,8 +163,10 @@ class FakeAdapter implements AgentAdapter {
     sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    opts?: SessionOptions,
   ): Promise<void> {
     this.executeCalls += 1;
+    this.lastExecuteOptions = opts;
     const session = this.sessionMap.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
@@ -223,6 +231,7 @@ class MultiSessionAdapter implements AgentAdapter {
     _sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     onEvent({
       type: "status",
@@ -263,6 +272,7 @@ class RemapDuringExecuteAdapter implements AgentAdapter {
     sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     const session = this.sessionMap.get(sessionId);
     if (!session) {
@@ -314,6 +324,7 @@ class SingleSessionAdapter implements AgentAdapter {
     sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     assert.equal(sessionId, this.sessionId);
     this.eventCounter += 1;
@@ -365,6 +376,7 @@ class ControlledStreamingAdapter implements AgentAdapter {
     sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     assert.equal(sessionId, this.sessionId);
     this.onEvent = onEvent;
@@ -429,6 +441,7 @@ class LateRemapStreamingAdapter implements AgentAdapter {
     sessionId: string,
     _input: string,
     onEvent: (event: AgentEvent) => void,
+    _opts?: SessionOptions,
   ): Promise<void> {
     assert.equal(sessionId, this.tempSessionId);
     this.onEvent = onEvent;
@@ -492,6 +505,93 @@ test("Bridge keeps the new Codex thread ID and reuses it for follow-up commands"
     assert.equal(adapter.startSessionCalls, 1, "should not restart the session");
     assert.equal(adapter.executeCalls, 2);
     assert.equal(adapter.lastExecuteSessionId, "real-session");
+  });
+});
+
+test("Bridge sends the slash catalog to newly connected clients", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new FakeAdapter();
+    bridgeAny.adapterVersion = "0.116.0";
+
+    const client = createClient("client");
+    bridgeAny.handleClientConnected(client);
+
+    assert.equal(client.sent[0]?.type, "session_list");
+    assert.equal(client.sent[1]?.type, "slash_catalog");
+    assert.equal(client.sent[1]?.adapter, "codex");
+    assert.equal(client.sent[1]?.adapterVersion, "0.116.0");
+  });
+});
+
+test("Bridge returns disabled reasons for slash_action requests that are not implemented", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    bridgeAny.adapter = new FakeAdapter();
+    bridgeAny.adapterVersion = "0.116.0";
+
+    const client = createClient("client");
+    connectClient(bridgeAny, client);
+
+    await bridgeAny.handleMessage(client, {
+      type: "slash_action",
+      commandId: "review",
+      sessionId: "session-1",
+    });
+
+    const result = client.sent[client.sent.length - 1];
+    assert.equal(result?.type, "slash_action_result");
+    assert.equal(result?.commandId, "review");
+    assert.equal(result?.ok, false);
+    assert.match(String(result?.message ?? ""), /not implemented/i);
+  });
+});
+
+test("Bridge passes reasoning effort through when starting a new session from config", async () => {
+  await withBridgeHarness(async ({ bridgeAny, workDir }) => {
+    const adapter = new FakeAdapter();
+    bridgeAny.adapter = adapter;
+
+    const client = createClient("client");
+    connectClient(bridgeAny, client);
+
+    await bridgeAny.handleCommand(client, "start with config", undefined, {
+      model: "gpt-5.4",
+      modelReasoningEffort: "xhigh",
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
+    });
+
+    assert.equal(adapter.startSessionCalls, 1);
+    assert.deepEqual(adapter.lastStartOptions, {
+      workDir,
+      model: "gpt-5.4",
+      modelReasoningEffort: "xhigh",
+      approvalPolicy: "on-request",
+      sandboxMode: "workspace-write",
+    });
+  });
+});
+
+test("Bridge passes updated session config through on follow-up commands for an existing session", async () => {
+  await withBridgeHarness(async ({ bridgeAny, workDir }) => {
+    const adapter = new FakeAdapter();
+    bridgeAny.adapter = adapter;
+
+    const client = createClient("client");
+    connectClient(bridgeAny, client);
+
+    await bridgeAny.handleCommand(client, "first command");
+    await bridgeAny.handleCommand(client, "follow-up with new permissions", "real-session", {
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
+
+    assert.equal(adapter.startSessionCalls, 1, "should keep the existing session");
+    assert.equal(adapter.lastExecuteSessionId, "real-session");
+    assert.deepEqual(adapter.lastExecuteOptions, {
+      workDir,
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+    });
   });
 });
 

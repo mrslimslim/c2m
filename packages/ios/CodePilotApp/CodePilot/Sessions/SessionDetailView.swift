@@ -17,8 +17,11 @@ struct SessionDetailView: View {
     @State private var errorMessage: String?
     @State private var showFileRequest: Bool = false
     @State private var sessionConfig = SessionConfig()
+    @State private var slashWorkflow = SlashWorkflowState()
     @State private var showSlashMenu = false
+    @State private var startsNewSession = false
     @State private var showDeleteConfirmation = false
+    @State private var showCopiedConversation = false
     @FocusState private var isComposerFocused: Bool
     @FocusState private var isFileRequestFocused: Bool
 
@@ -42,7 +45,8 @@ struct SessionDetailView: View {
                             TimelineCellView(
                                 item: item,
                                 agentType: session?.agentType,
-                                previousItem: index > 0 ? timeline[index - 1] : nil
+                                previousItem: index > 0 ? timeline[index - 1] : nil,
+                                onCopy: copyToPasteboard
                             )
                             .padding(.horizontal)
                             .id(index)
@@ -91,6 +95,23 @@ struct SessionDetailView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 12) {
                     Button {
+                        copyConversationTranscript()
+                    } label: {
+                        if showCopiedConversation {
+                            Label("Copy Conversation", systemImage: "checkmark")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(CPTheme.success)
+                        } else {
+                            Label("Copy Conversation", systemImage: "doc.on.doc")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(conversationTranscript.isEmpty)
+
+                    Button {
                         prepareForModalTransition {
                             showDeleteConfirmation = true
                         }
@@ -130,6 +151,10 @@ struct SessionDetailView: View {
         .onAppear {
             appModel.selectSession(id: sessionID)
             draft = viewModel.draft
+            slashWorkflow.updateCatalog(slashCatalog)
+        }
+        .onChange(of: slashCatalog) { _, newCatalog in
+            slashWorkflow.updateCatalog(newCatalog)
         }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
@@ -238,8 +263,12 @@ struct SessionDetailView: View {
             // Slash menu (appears above composer)
             if showSlashMenu {
                 SlashCommandMenu(
+                    workflow: $slashWorkflow,
                     config: $sessionConfig,
                     inputText: $draft,
+                    sessionID: sessionID,
+                    onBridgeAction: handleSlashBridgeAction,
+                    onClientAction: handleSlashClientAction,
                     onDismiss: { showSlashMenu = false }
                 )
                 .padding(.horizontal, 12)
@@ -256,6 +285,28 @@ struct SessionDetailView: View {
                     .padding(.top, 6)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
+            }
+
+            if startsNewSession {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.bubble.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CPTheme.accent)
+                    Text("Next send starts a new session")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CPTheme.accent)
+                    Spacer()
+                    Button("Use Current") {
+                        withAnimation(.spring(duration: 0.24, bounce: 0.14)) {
+                            startsNewSession = false
+                        }
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             // Input row
@@ -290,7 +341,7 @@ struct SessionDetailView: View {
                         .layoutPriority(1)
                         .onChange(of: draft) { _, newValue in
                             withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                                showSlashMenu = newValue.hasPrefix("/")
+                                showSlashMenu = newValue.hasPrefix("/") || slashWorkflow.canGoBack
                             }
                         }
 
@@ -408,8 +459,20 @@ struct SessionDetailView: View {
         appModel.timeline(for: sessionID)
     }
 
+    private var conversationTranscript: String {
+        TimelineCopyFormatter.transcript(for: timeline, agentType: session?.agentType)
+    }
+
     private var files: [FileState] {
         appModel.files(for: sessionID)
+    }
+
+    private var slashCatalog: SlashCatalogMessage? {
+        appModel.slashCatalog(forSessionID: sessionID)
+    }
+
+    private var connectionID: String? {
+        appModel.connectionID(forSessionID: sessionID)
     }
 
     private var viewModel: SessionDetailViewModel {
@@ -427,10 +490,23 @@ struct SessionDetailView: View {
 
     private func sendDraft() {
         do {
-            viewModel.draft = draft
             let config = sessionConfig.isEmpty ? nil : sessionConfig
-            try viewModel.sendDraft(config: config)
-            draft = viewModel.draft
+            if startsNewSession {
+                try appModel.sendNewSessionCommand(
+                    draft,
+                    connectionID: connectionID,
+                    config: config
+                )
+                draft = ""
+                startsNewSession = false
+                DispatchQueue.main.async {
+                    dismiss()
+                }
+            } else {
+                viewModel.draft = draft
+                try viewModel.sendDraft(config: config)
+                draft = viewModel.draft
+            }
             isComposerFocused = false
             appModel.refreshPublishedState()
             errorMessage = nil
@@ -460,6 +536,33 @@ struct SessionDetailView: View {
             errorMessage = nil
         } catch {
             errorMessage = "Failed to request file."
+        }
+    }
+
+    private func handleSlashBridgeAction(_ message: SlashActionMessage) {
+        do {
+            try viewModel.sendSlashAction(
+                commandId: message.commandId,
+                arguments: message.arguments
+            )
+            appModel.refreshPublishedState()
+            errorMessage = nil
+        } catch {
+            errorMessage = "Failed to run slash action."
+        }
+    }
+
+    private func handleSlashClientAction(_ commandID: String) {
+        switch commandID {
+        case "new":
+            withAnimation(.spring(duration: 0.24, bounce: 0.14)) {
+                startsNewSession = true
+                draft = ""
+                showSlashMenu = false
+            }
+            isComposerFocused = true
+        default:
+            break
         }
     }
 
@@ -499,6 +602,21 @@ struct SessionDetailView: View {
         resignActiveTextInput()
     }
 
+    private func copyConversationTranscript() {
+        guard !conversationTranscript.isEmpty else { return }
+        copyToPasteboard(conversationTranscript)
+        showCopiedConversation = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            showCopiedConversation = false
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = text
+        #endif
+    }
+
     private func prepareForModalTransition(_ action: (() -> Void)? = nil) {
         isComposerFocused = false
         isFileRequestFocused = false
@@ -524,6 +642,7 @@ private struct TimelineCellView: View {
     let item: TimelineItem
     let agentType: AgentType?
     let previousItem: TimelineItem?
+    let onCopy: ((String) -> Void)?
 
     private var topSpacing: CGFloat {
         guard let prev = previousItem else { return 0 }
@@ -542,38 +661,60 @@ private struct TimelineCellView: View {
                 Spacer().frame(height: topSpacing)
             }
 
-            switch item.kind {
-            case let .userCommand(text):
-                UserCommandBubble(text: text)
-
-            case let .agentMessage(text):
-                AgentMessageBubble(text: text, agentType: agentType ?? .claude)
-
-            case let .thinking(text):
-                ThinkingCell(text: text)
-
-            case let .codeChange(changes):
-                CodeChangeCard(changes: changes)
-
-            case let .commandExec(command, output, exitCode, status):
-                CommandExecCard(command: command, output: output, exitCode: exitCode, status: status)
-
-            case let .turnCompleted(summary, filesChanged, usage):
-                TurnCompletedCard(summary: summary, filesChanged: filesChanged, usage: usage)
-
-            case let .status(state, message):
-                StatusBanner(state: state, message: message)
-
-            case let .sessionError(message):
-                ErrorBanner(message: message, isTransport: false)
-
-            case let .transportError(message):
-                ErrorBanner(message: message, isTransport: true)
-
-            case let .system(message):
-                SystemMessage(message: message)
-            }
+            timelineContent
+                .contentShape(Rectangle())
+                .contextMenu {
+                    if let copyPayload {
+                        Button {
+                            onCopy?(copyPayload.text)
+                        } label: {
+                            Label(copyPayload.title, systemImage: "doc.on.doc")
+                        }
+                    }
+                }
         }
+    }
+
+    @ViewBuilder
+    private var timelineContent: some View {
+        switch item.kind {
+        case let .userCommand(text):
+            UserCommandBubble(text: text)
+
+        case let .agentMessage(text):
+            AgentMessageBubble(text: text, agentType: agentType ?? .claude)
+
+        case let .thinking(text):
+            ThinkingCell(text: text)
+
+        case let .codeChange(changes):
+            CodeChangeCard(changes: changes)
+
+        case let .commandExec(command, output, exitCode, status):
+            CommandExecCard(command: command, output: output, exitCode: exitCode, status: status)
+
+        case let .turnCompleted(summary, filesChanged, usage):
+            TurnCompletedCard(summary: summary, filesChanged: filesChanged, usage: usage)
+
+        case let .status(state, message):
+            StatusBanner(state: state, message: message)
+
+        case let .sessionError(message):
+            ErrorBanner(message: message, isTransport: false)
+
+        case let .transportError(message):
+            ErrorBanner(message: message, isTransport: true)
+
+        case let .system(message):
+            SystemMessage(message: message)
+        }
+    }
+
+    private var copyPayload: (title: String, text: String)? {
+        guard let payload = TimelineCopyFormatter.copyPayload(for: item, agentType: agentType) else {
+            return nil
+        }
+        return (payload.title, payload.text)
     }
 }
 
@@ -588,6 +729,7 @@ private struct UserCommandBubble: View {
             Text(text)
                 .font(.subheadline)
                 .foregroundStyle(.white)
+                .textSelection(.enabled)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(
@@ -780,6 +922,7 @@ private struct CommandExecCard: View {
                 Text(output)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(Color.white.opacity(0.7))
+                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .lineLimit(30)
