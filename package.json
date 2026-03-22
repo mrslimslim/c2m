@@ -4,12 +4,23 @@
   "private": true,
   "description": "Mobile command center for AI coding agents",
   "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm run test:unit",
-    "test:unit": "pnpm -r build && pnpm --filter @codepilot/bridge test",
-    "check": "pnpm run test:unit",
-    "dev": "pnpm -r --parallel dev",
-    "clean": "pnpm -r clean"
+    "build": "cargo build --workspace && cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown",
+    "build:bridge": "cargo build -p codepilot-bridge",
+    "build:relay": "cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown",
+    "test": "cargo test --workspace",
+    "test:bridge": "cargo test -p codepilot-bridge",
+    "test:relay": "cargo test -p codepilot-relay-worker",
+    "test:agents": "cargo test -p codepilot-agents",
+    "check": "cargo test --workspace && cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown",
+    "bridge": "cargo run -p codepilot-bridge --",
+    "bridge:help": "cargo run -p codepilot-bridge -- --help",
+    "relay:dev": "cd crates/codepilot-relay-worker && npx wrangler dev",
+    "relay:deploy": "cd crates/codepilot-relay-worker && npx wrangler deploy",
+    "clean": "cargo clean",
+    "legacy:build": "pnpm -r build",
+    "legacy:test": "pnpm -r build && pnpm --filter @codepilot/bridge test",
+    "legacy:dev": "pnpm -r --parallel dev",
+    "legacy:clean": "pnpm -r clean"
   },
   "engines": {
     "node": ">=18"

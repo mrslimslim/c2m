@@ -4,6 +4,8 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 
 ## Current Runtime Assumptions
 
+- Rust Cargo workspace is the default build and test runtime for the repository.
+- End-to-end iOS device QA still uses the legacy bridge launch path as a temporary fallback until the final runtime cutover removes it.
 - The app may save multiple connection configs, but it only keeps one live bridge connection at a time.
 - LAN is the primary baseline path.
 - Relay is supported and should be verified, but it is not the default self-use path.
@@ -23,25 +25,31 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 1. Build the workspace:
 
 ```bash
-pnpm build
+pnpm run build
 ```
 
-2. For LAN verification, start the bridge:
+2. Build the temporary legacy bridge fallback used for device QA:
 
 ```bash
-node packages/bridge/dist/bin/codepilot.js --dir /absolute/path/to/test-repo
+pnpm run legacy:build
 ```
 
-3. For Relay verification, start the bridge in relay mode:
+3. For LAN verification, start the legacy bridge binary:
 
 ```bash
-node packages/bridge/dist/bin/codepilot.js --relay --dir /absolute/path/to/test-repo
+pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --dir /absolute/path/to/test-repo
 ```
 
-4. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port` or `relay`/`channel`, plus `bridge_pubkey` and `otp`.
-5. If you are validating Codex slash commands, also confirm `codex --version` matches the catalog you expect. The current baseline is `codex-cli 0.116.0`.
-6. Install the iOS app on a physical device.
-7. If you want a clean run, delete any previously saved projects in the app before starting.
+4. For Relay verification, start the legacy bridge in relay mode:
+
+```bash
+pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --relay --dir /absolute/path/to/test-repo
+```
+
+5. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port` or `relay`/`channel`, plus `bridge_pubkey` and `otp`.
+6. If you are validating Codex slash commands, also confirm `codex --version` matches the catalog you expect. The current baseline is `codex-cli 0.116.0`.
+7. Install the iOS app on a physical device.
+8. If you want a clean run, delete any previously saved projects in the app before starting.
 
 ## Pass Criteria
 

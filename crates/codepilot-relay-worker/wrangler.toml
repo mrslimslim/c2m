@@ -1,3 +1,4 @@
+# Use the repo-root `relay:*` scripts or run `npx wrangler ...` from this crate.
 name = "codepilot-relay"
 main = "build/worker/shim.mjs"
 compatibility_date = "2025-01-01"
