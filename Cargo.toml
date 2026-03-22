@@ -1,4 +1,3 @@
 [workspace]
-members = ["crates/codepilot-protocol"]
+members = ["crates/codepilot-core", "crates/codepilot-protocol"]
 resolver = "2"
-
