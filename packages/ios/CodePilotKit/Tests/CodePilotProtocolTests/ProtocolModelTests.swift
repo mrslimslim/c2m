@@ -5,7 +5,7 @@ import XCTest
 final class ProtocolModelTests: XCTestCase {
     func testHandshakeMessagesAreModeledOutsideAppLayerUnions() throws {
         let handshake = #"{"type":"handshake","phone_pubkey":"pubkey","otp":"123456"}"#
-        let handshakeOK = #"{"type":"handshake_ok","encrypted":true,"clientId":"client-1"}"#
+        let handshakeOK = #"{"type":"handshake_ok","encrypted":true,"clientId":"client-1","capabilities":["session_replay_v1"]}"#
 
         try assertRoundTrip(
             HandshakeMessage.self,
@@ -15,11 +15,24 @@ final class ProtocolModelTests: XCTestCase {
         try assertRoundTrip(
             HandshakeOkMessage.self,
             json: handshakeOK,
-            expected: .init(encrypted: true, clientId: "client-1")
+            expected: .init(
+                encrypted: true,
+                clientId: "client-1",
+                capabilities: [BridgeCapability.sessionReplayV1]
+            )
         )
 
         XCTAssertThrowsError(try decode(PhoneMessage.self, from: handshake))
         XCTAssertThrowsError(try decode(BridgeMessage.self, from: handshakeOK))
+    }
+
+    func testHandshakeOkMessageDefaultsCapabilitiesToNilWhenBridgeOmitsThem() throws {
+        let handshakeOK = #"{"type":"handshake_ok","encrypted":true,"clientId":"client-1"}"#
+
+        let decoded = try decode(HandshakeOkMessage.self, from: handshakeOK)
+
+        XCTAssertEqual(decoded, .init(encrypted: true, clientId: "client-1", capabilities: nil))
+        XCTAssertNil(decoded.capabilities)
     }
 
     func testHandshakeMessageRejectsWrongTypeDiscriminator() {

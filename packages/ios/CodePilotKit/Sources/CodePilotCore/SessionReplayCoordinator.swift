@@ -80,6 +80,12 @@ public final class SessionReplayCoordinator {
         }
     }
 
+    public func hasInFlightSyncs(for connectionID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !(inFlightAfterEventIdByConnectionID[connectionID]?.isEmpty ?? true)
+    }
+
     public func reset(for connectionID: String) {
         lock.lock()
         defer { lock.unlock() }

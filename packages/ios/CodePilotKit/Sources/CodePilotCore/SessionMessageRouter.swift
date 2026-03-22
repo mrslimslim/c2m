@@ -34,6 +34,12 @@ public final class SessionMessageRouter {
 
         case let .event(sessionId, event, eventId, timestamp):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            if eventId <= 0 {
+                timelineStore.appendBridgeEvent(sessionId: targetSessionId, event: event, timestamp: timestamp)
+                applySessionState(event: event, sessionId: targetSessionId)
+                diagnostics.recordInfo("legacy_event:\(targetSessionId):\(eventLabel(event))")
+                return
+            }
             let lastAppliedEventId = sessionStore.lastAppliedEventID(for: targetSessionId) ?? 0
             if eventId <= lastAppliedEventId {
                 diagnostics.recordInfo("event_duplicate:\(targetSessionId):\(eventId)")

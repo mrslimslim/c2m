@@ -14,10 +14,13 @@ export interface HandshakeMessage {
   otp: string;
 }
 
+export const SESSION_REPLAY_CAPABILITY = "session_replay_v1";
+
 export interface HandshakeOkMessage {
   type: "handshake_ok";
   encrypted: boolean;
   clientId?: string;
+  capabilities?: string[];
 }
 
 // ─── Session Configuration ──────────────────────────────────────────

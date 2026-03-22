@@ -23,6 +23,10 @@ public final class BridgeConnectionController {
         withQueue { currentState }
     }
 
+    public var supportsSessionReplay: Bool {
+        withQueue { currentCapabilities.contains(BridgeCapability.sessionReplayV1) }
+    }
+
     private let config: ConnectionConfig
     private let transport: BridgeTransport
     private let diagnostics: DiagnosticsStore
@@ -47,6 +51,7 @@ public final class BridgeConnectionController {
     private var waitingForLegacyAuth = false
     private var cryptoSession = E2ECryptoSession()
     private var sessionKey: Data?
+    private var currentCapabilities: Set<String> = []
 
     public var maxReconnectAttempts: Int = 5
     public var reconnectBaseDelay: TimeInterval = 0.5
@@ -85,6 +90,7 @@ public final class BridgeConnectionController {
             transport.close()
             ignoreDisconnectCallback = false
             sessionKey = nil
+            currentCapabilities = []
             negotiationPhase = .idle
             waitingForLegacyAuth = false
             transition(to: .disconnected)
@@ -142,6 +148,7 @@ public final class BridgeConnectionController {
         waitingForLegacyAuth = false
         negotiationPhase = .awaitingHandshake
         sessionKey = nil
+        currentCapabilities = []
         cryptoSession = E2ECryptoSession()
 
         do {
@@ -252,9 +259,15 @@ public final class BridgeConnectionController {
             sessionKey = nil
         }
 
+        currentCapabilities = Set(message.capabilities ?? [])
         negotiationPhase = .established
         waitingForLegacyAuth = false
         reconnectAttempts = 0
+        if currentCapabilities.contains(BridgeCapability.sessionReplayV1) {
+            diagnostics.recordInfo("capability:\(BridgeCapability.sessionReplayV1)")
+        } else {
+            diagnostics.recordInfo("session replay unavailable on this bridge")
+        }
         transition(to: .connected(encrypted: message.encrypted, clientId: message.clientId))
     }
 
@@ -299,6 +312,7 @@ public final class BridgeConnectionController {
             }
 
             sessionKey = nil
+            currentCapabilities = []
             waitingForLegacyAuth = false
             negotiationPhase = .established
             transition(to: .connected(encrypted: false, clientId: clientId))
@@ -404,6 +418,7 @@ public final class BridgeConnectionController {
             shouldStayConnected = false
             negotiationPhase = .idle
             waitingForLegacyAuth = false
+            currentCapabilities = []
         }
         diagnostics.recordError(reason)
         transition(to: .failed(reason: reason))

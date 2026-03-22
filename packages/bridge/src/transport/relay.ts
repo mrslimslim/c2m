@@ -9,7 +9,7 @@
 
 import WebSocket from "ws";
 import { createHash, randomBytes } from "node:crypto";
-import type { BridgeMessage, PhoneMessage } from "@codepilot/protocol";
+import { SESSION_REPLAY_CAPABILITY, type BridgeMessage, type PhoneMessage } from "@codepilot/protocol";
 import type { TransportClient, TransportServer } from "./types.js";
 import {
   decrypt,
@@ -197,6 +197,7 @@ export class RelayTransport implements TransportServer {
                 type: "handshake_ok",
                 encrypted: true,
                 clientId: tc.id,
+                capabilities: [SESSION_REPLAY_CAPABILITY],
               });
               for (const handler of this.connectHandlers) {
                 handler(tc);

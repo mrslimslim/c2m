@@ -31,6 +31,7 @@ private struct ConnectionSlot {
     let router: SessionMessageRouter
     var summary: String = "Disconnected"
     var shouldBootstrapReplay: Bool = false
+    var supportsSessionReplay: Bool = false
 }
 
 // MARK: - AppModel
@@ -572,19 +573,27 @@ final class AppModel: ObservableObject {
         case .disconnected:
             slots[slotID]?.summary = "Disconnected"
             slots[slotID]?.shouldBootstrapReplay = false
+            slots[slotID]?.supportsSessionReplay = false
             sessionReplayCoordinator.reset(for: slotID)
         case .connecting:
             slots[slotID]?.summary = "Connecting..."
             slots[slotID]?.shouldBootstrapReplay = false
+            slots[slotID]?.supportsSessionReplay = false
         case .reconnecting:
             slots[slotID]?.summary = "Reconnecting..."
             slots[slotID]?.shouldBootstrapReplay = false
+            slots[slotID]?.supportsSessionReplay = false
             sessionReplayCoordinator.reset(for: slotID)
         case let .connected(encrypted, clientId):
             let mode = encrypted ? "encrypted" : "plaintext"
+            let replaySupported = slots[slotID]?.controller.supportsSessionReplay ?? false
             slots[slotID]?.summary = "Connected (\(mode))"
-            slots[slotID]?.shouldBootstrapReplay = true
+            slots[slotID]?.supportsSessionReplay = replaySupported
+            slots[slotID]?.shouldBootstrapReplay = replaySupported
             diagnosticsStore.recordInfo("[\(slotID)] connected clientId=\(clientId ?? "nil") encrypted=\(encrypted)")
+            if !replaySupported {
+                diagnosticsStore.recordInfo("[\(slotID)] session replay unavailable; reconnect recovery disabled")
+            }
             // Auto-request session list
             if let slot = slots[slotID] {
                 do {
@@ -603,7 +612,8 @@ final class AppModel: ObservableObject {
     private func handleSlotBridgeMessage(slotID: String, message: BridgeMessage) {
         guard let slot = slots[slotID] else { return }
         normalizeSessionToSlotMappings(for: slotID)
-        let recoverableSessionIDs = knownSessionIDs(for: slotID)
+        let previouslyMappedSessionIDs = knownSessionIDs(for: slotID)
+        let restoredSessionIDs = sessionStore.sessions.map(\.id)
 
         slot.router.handle(message)
 
@@ -611,7 +621,7 @@ final class AppModel: ObservableObject {
         case let .sessionList(sessions):
             synchronizeSessionRemoval(
                 for: slotID,
-                previousSessionIDs: recoverableSessionIDs,
+                previousSessionIDs: previouslyMappedSessionIDs,
                 incomingSessions: sessions
             )
             for session in sessions {
@@ -620,13 +630,22 @@ final class AppModel: ObservableObject {
             normalizeSessionToSlotMappings(for: slotID)
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
-                knownSessionIDs: recoverableSessionIDs,
+                knownSessionIDs: previouslyMappedSessionIDs,
                 incomingSessions: sessions
             ) {
                 applyPendingSessionResolution(resolution)
             }
             if slots[slotID]?.shouldBootstrapReplay == true {
-                requestReplayBootstrap(for: slotID, sessionIDs: recoverableSessionIDs)
+                requestReplayBootstrap(
+                    for: slotID,
+                    sessionIDs: SessionReplayBootstrapPlanner.sessionIDsForReconnect(
+                        restoredSessionIDs: restoredSessionIDs,
+                        previouslyMappedSessionIDs: previouslyMappedSessionIDs,
+                        currentMappedSessionIDs: knownSessionIDs(for: slotID)
+                    ) { sessionID in
+                        sessionStore.resolvedSessionId(for: sessionID)
+                    }
+                )
                 slots[slotID]?.shouldBootstrapReplay = false
             }
 
@@ -634,7 +653,7 @@ final class AppModel: ObservableObject {
             let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
-                knownSessionIDs: recoverableSessionIDs,
+                knownSessionIDs: previouslyMappedSessionIDs,
                 incomingEventSessionID: resolvedSessionID
             ) {
                 applyPendingSessionResolution(resolution)
@@ -654,7 +673,10 @@ final class AppModel: ObservableObject {
                 resolvedSessionID: resolvedSessionId
             )
 
-        case .fileContent, .pong, .error:
+        case let .error(message):
+            handleReplayProtocolErrorIfNeeded(slotID: slotID, message: message)
+
+        case .fileContent, .pong:
             break
         }
 
@@ -763,6 +785,11 @@ final class AppModel: ObservableObject {
     }
 
     private func requestReplayBootstrap(for slotID: String, sessionIDs: [String]) {
+        guard slots[slotID]?.supportsSessionReplay == true else {
+            slots[slotID]?.shouldBootstrapReplay = false
+            return
+        }
+
         let requests = sessionReplayCoordinator.enqueueReconnectSyncs(
             for: slotID,
             sessionIDs: sessionIDs
@@ -773,6 +800,10 @@ final class AppModel: ObservableObject {
     }
 
     private func handleReplayNeeded(slotID: String, sessionID: String, afterEventId: Int) {
+        guard slots[slotID]?.supportsSessionReplay == true else {
+            return
+        }
+
         guard let request = sessionReplayCoordinator.enqueueGapSync(
             for: slotID,
             sessionID: sessionID,
@@ -781,6 +812,20 @@ final class AppModel: ObservableObject {
             return
         }
         sendReplayRequests([request], through: slotID)
+    }
+
+    private func handleReplayProtocolErrorIfNeeded(slotID: String, message: String) {
+        guard message == "Invalid message format" else {
+            return
+        }
+        guard sessionReplayCoordinator.hasInFlightSyncs(for: slotID) else {
+            return
+        }
+
+        slots[slotID]?.supportsSessionReplay = false
+        slots[slotID]?.shouldBootstrapReplay = false
+        sessionReplayCoordinator.reset(for: slotID)
+        diagnosticsStore.recordError("[\(slotID)] session replay disabled after bridge rejected sync_session")
     }
 
     private func sendReplayRequests(_ requests: [SessionReplayRequest], through slotID: String) {

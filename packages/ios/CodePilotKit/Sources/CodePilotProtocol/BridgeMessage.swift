@@ -1,19 +1,26 @@
 import Foundation
 
+public enum BridgeCapability {
+    public static let sessionReplayV1 = "session_replay_v1"
+}
+
 public struct HandshakeOkMessage: Codable, Equatable, Sendable {
     public let type: String = "handshake_ok"
     public let encrypted: Bool
     public let clientId: String?
+    public let capabilities: [String]?
 
     enum CodingKeys: String, CodingKey {
         case type
         case encrypted
         case clientId
+        case capabilities
     }
 
-    public init(encrypted: Bool, clientId: String?) {
+    public init(encrypted: Bool, clientId: String?, capabilities: [String]? = nil) {
         self.encrypted = encrypted
         self.clientId = clientId
+        self.capabilities = capabilities
     }
 
     public init(from decoder: Decoder) throws {
@@ -29,6 +36,7 @@ public struct HandshakeOkMessage: Codable, Equatable, Sendable {
 
         self.encrypted = try container.decode(Bool.self, forKey: .encrypted)
         self.clientId = try container.decodeIfPresent(String.self, forKey: .clientId)
+        self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -36,6 +44,7 @@ public struct HandshakeOkMessage: Codable, Equatable, Sendable {
         try container.encode("handshake_ok", forKey: .type)
         try container.encode(encrypted, forKey: .encrypted)
         try container.encodeIfPresent(clientId, forKey: .clientId)
+        try container.encodeIfPresent(capabilities, forKey: .capabilities)
     }
 }
 
@@ -83,7 +92,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             self = .event(
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 event: try container.decode(AgentEvent.self, forKey: .event),
-                eventId: try container.decode(Int.self, forKey: .eventId),
+                eventId: try container.decodeIfPresent(Int.self, forKey: .eventId) ?? 0,
                 timestamp: try container.decode(Int.self, forKey: .timestamp)
             )
         case .sessionList:
@@ -115,7 +124,9 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.event, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
             try container.encode(event, forKey: .event)
-            try container.encode(eventId, forKey: .eventId)
+            if eventId > 0 {
+                try container.encode(eventId, forKey: .eventId)
+            }
             try container.encode(timestamp, forKey: .timestamp)
         case let .sessionList(sessions):
             try container.encode(MessageType.sessionList, forKey: .type)

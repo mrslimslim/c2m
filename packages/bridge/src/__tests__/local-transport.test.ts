@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import WebSocket from "ws";
-import { type PhoneMessage } from "@codepilot/protocol";
+import { SESSION_REPLAY_CAPABILITY, type PhoneMessage } from "@codepilot/protocol";
 import { LocalTransport } from "../transport/local.js";
 import {
   deriveSessionKey,
@@ -115,6 +115,7 @@ describe("LocalTransport E2E sessions", () => {
       const [handshakeRaw] = await once(ws, "message");
       const handshake = JSON.parse(handshakeRaw.toString());
       assert.equal(handshake.type, "handshake_ok");
+      assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY]);
 
       ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
       await delay(75);

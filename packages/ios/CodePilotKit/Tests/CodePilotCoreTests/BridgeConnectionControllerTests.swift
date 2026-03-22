@@ -84,6 +84,56 @@ final class BridgeConnectionControllerTests: XCTestCase {
         XCTAssertNoThrow(try extractHandshake(from: transport.sentFrames, at: 0))
     }
 
+    func testHandshakeWithoutReplayCapabilityDefaultsReplaySupportToFalse() throws {
+        let transport = MockBridgeTransport()
+        let bridgeSession = E2ECryptoSession()
+        let diagnostics = DiagnosticsStore()
+        let config = ConnectionConfig.lan(
+            host: "192.168.1.100",
+            port: 19_260,
+            token: "legacy-token",
+            bridgePublicKey: bridgeSession.publicKeyBase64,
+            otp: "otp-123456"
+        )
+        let controller = BridgeConnectionController(config: config, transport: transport, diagnostics: diagnostics)
+
+        try controller.connect()
+        transport.simulateReceive(.handshakeOK(.init(encrypted: true, clientId: "client-1")))
+
+        XCTAssertEqual(controller.state, .connected(encrypted: true, clientId: "client-1"))
+        XCTAssertFalse(controller.supportsSessionReplay)
+        XCTAssertTrue(
+            diagnostics.entries.contains { $0.message.contains("session replay unavailable") }
+        )
+    }
+
+    func testHandshakeWithReplayCapabilityEnablesReplaySupport() throws {
+        let transport = MockBridgeTransport()
+        let bridgeSession = E2ECryptoSession()
+        let config = ConnectionConfig.lan(
+            host: "192.168.1.100",
+            port: 19_260,
+            token: "legacy-token",
+            bridgePublicKey: bridgeSession.publicKeyBase64,
+            otp: "otp-123456"
+        )
+        let controller = BridgeConnectionController(config: config, transport: transport, diagnostics: DiagnosticsStore())
+
+        try controller.connect()
+        transport.simulateReceive(
+            .handshakeOK(
+                .init(
+                    encrypted: true,
+                    clientId: "client-1",
+                    capabilities: [BridgeCapability.sessionReplayV1]
+                )
+            )
+        )
+
+        XCTAssertEqual(controller.state, .connected(encrypted: true, clientId: "client-1"))
+        XCTAssertTrue(controller.supportsSessionReplay)
+    }
+
     func testRelayRejectsPlaintextHandshakeDowngrade() throws {
         let transport = MockBridgeTransport()
         let bridgeSession = E2ECryptoSession()

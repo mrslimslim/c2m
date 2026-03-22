@@ -2,6 +2,39 @@ import Foundation
 import Network
 import CodePilotProtocol
 
+protocol NWConnectionProtocol: AnyObject {
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? { get set }
+
+    func start(queue: DispatchQueue)
+    func cancel()
+    func send(content: Data?, completion: @escaping @Sendable (NWError?) -> Void)
+    func receive(
+        minimumIncompleteLength: Int,
+        maximumLength: Int,
+        completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void
+    )
+}
+
+extension NWConnection: NWConnectionProtocol {
+    func send(content: Data?, completion: @escaping @Sendable (NWError?) -> Void) {
+        send(content: content, completion: .contentProcessed(completion))
+    }
+
+    func receive(
+        minimumIncompleteLength: Int,
+        maximumLength: Int,
+        completion: @escaping @Sendable (Data?, Bool, NWError?) -> Void
+    ) {
+        receive(minimumIncompleteLength: minimumIncompleteLength, maximumLength: maximumLength) {
+            data,
+            _,
+            isComplete,
+            error in
+            completion(data, isComplete, error)
+        }
+    }
+}
+
 /// WebSocket transport using raw Network.framework TCP + manual HTTP upgrade.
 /// Not subject to ATS — works with `ws://` LAN hosts.
 public final class NWBridgeTransport: BridgeTransport {
@@ -13,8 +46,9 @@ public final class NWBridgeTransport: BridgeTransport {
     private let decoder = JSONDecoder()
     private let stateQueue = DispatchQueue(label: "CodePilotCore.NWBridgeTransport.state")
     private let networkQueue = DispatchQueue(label: "CodePilotCore.NWBridgeTransport.network")
+    private let connectionFactory: (NWEndpoint.Host, NWEndpoint.Port, NWParameters) -> NWConnectionProtocol
 
-    private var connection: NWConnection?
+    private var connection: NWConnectionProtocol?
     private var isClosed = true
     private var connectionGeneration: UInt64 = 0
     private var isUpgraded = false
@@ -23,16 +57,28 @@ public final class NWBridgeTransport: BridgeTransport {
 
     public init(url: URL) {
         self.url = url
+        self.connectionFactory = { host, port, parameters in
+            NWConnection(host: host, port: port, using: parameters)
+        }
+    }
+
+    init(
+        url: URL,
+        connectionFactory: @escaping (NWEndpoint.Host, NWEndpoint.Port, NWParameters) -> NWConnectionProtocol
+    ) {
+        self.url = url
+        self.connectionFactory = connectionFactory
     }
 
     public func open() throws {
-        var oldConnection: NWConnection?
+        var oldConnection: NWConnectionProtocol?
 
         stateQueue.sync {
             isClosed = false
             connectionGeneration += 1
             isUpgraded = false
             pendingSendQueue.removeAll()
+            receiveBuffer.removeAll()
             oldConnection = connection
             connection = nil
         }
@@ -55,7 +101,7 @@ public final class NWBridgeTransport: BridgeTransport {
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw NWBridgeTransportError.invalidURL
         }
-        let conn = NWConnection(host: nwHost, port: nwPort, using: params)
+        let conn = connectionFactory(nwHost, nwPort, params)
 
         let token = stateQueue.sync { connectionGeneration }
 
@@ -71,7 +117,7 @@ public final class NWBridgeTransport: BridgeTransport {
     }
 
     public func close() {
-        let prev: NWConnection? = stateQueue.sync {
+        let prev: NWConnectionProtocol? = stateQueue.sync {
             isClosed = true
             connectionGeneration += 1
             isUpgraded = false
@@ -110,17 +156,17 @@ public final class NWBridgeTransport: BridgeTransport {
             return
         }
 
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn else {
             throw NWBridgeTransportError.notConnected
         }
 
-        conn.send(content: wsFrame, completion: .contentProcessed { [weak self] error in
+        conn.send(content: wsFrame) { [weak self] error in
             guard let self else { return }
             if let error, self.isActive(generation: gen) {
                 self.onDisconnect?(error)
             }
-        })
+        }
     }
 
     // MARK: - State Handling
@@ -157,7 +203,7 @@ public final class NWBridgeTransport: BridgeTransport {
 
     private func performUpgrade(generation: UInt64, host: String, port: UInt16, path: String) {
         guard isActive(generation: generation) else { return }
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn else { return }
 
         // Generate Sec-WebSocket-Key
@@ -182,7 +228,7 @@ public final class NWBridgeTransport: BridgeTransport {
             return
         }
 
-        conn.send(content: requestData, completion: .contentProcessed { [weak self] error in
+        conn.send(content: requestData) { [weak self] error in
             guard let self, self.isActive(generation: generation) else { return }
             if let error {
                 self.onDisconnect?(error)
@@ -191,20 +237,25 @@ public final class NWBridgeTransport: BridgeTransport {
 
             // Read upgrade response
             self.readUpgradeResponse(generation: generation)
-        })
+        }
     }
 
     private func readUpgradeResponse(generation: UInt64) {
         guard isActive(generation: generation) else { return }
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn else { return }
 
         // Read enough bytes for the HTTP response (up to 4KB)
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] content, _, _, error in
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] content, isComplete, error in
             guard let self, self.isActive(generation: generation) else { return }
 
             if let error {
                 self.onDisconnect?(error)
+                return
+            }
+
+            if isComplete {
+                self.onDisconnect?(nil)
                 return
             }
 
@@ -248,10 +299,10 @@ public final class NWBridgeTransport: BridgeTransport {
 
     private func receiveWebSocketData(generation: UInt64) {
         guard isActive(generation: generation) else { return }
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn else { return }
 
-        conn.receive(minimumIncompleteLength: 2, maximumLength: 65536) { [weak self] content, _, isComplete, error in
+        conn.receive(minimumIncompleteLength: 2, maximumLength: 65536) { [weak self] content, isComplete, error in
             guard let self, self.isActive(generation: generation) else { return }
 
             if let error {
@@ -328,22 +379,22 @@ public final class NWBridgeTransport: BridgeTransport {
             pendingSendQueue.removeAll()
             return q
         }
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn, isActive(generation: generation) else { return }
 
         for (data, completion) in queue {
-            conn.send(content: data, completion: .contentProcessed { error in
+            conn.send(content: data) { error in
                 completion?(error)
-            })
+            }
         }
     }
 
     private func sendPong(_ payload: Data, generation: UInt64) {
-        let conn: NWConnection? = stateQueue.sync { connection }
+        let conn: NWConnectionProtocol? = stateQueue.sync { connection }
         guard let conn, isActive(generation: generation) else { return }
 
         let pongFrame = buildWebSocketFrame(opcode: 0xA, payload: payload, mask: true)
-        conn.send(content: pongFrame, completion: .contentProcessed { _ in })
+        conn.send(content: pongFrame) { _ in }
     }
 
     // MARK: - WebSocket Frame Parsing

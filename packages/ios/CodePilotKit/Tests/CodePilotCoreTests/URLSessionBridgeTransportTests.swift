@@ -34,6 +34,54 @@ final class URLSessionBridgeTransportTests: XCTestCase {
         createdTasks[1].triggerReceive(.failure(MockTransportError.synthetic))
         XCTAssertEqual(disconnectCount, 1)
     }
+
+    func testLegacyEventFramesWithoutEventIDDoNotDisconnectTransport() throws {
+        var createdTasks: [MockWebSocketTask] = []
+        let transport = URLSessionBridgeTransport(
+            url: URL(string: "ws://example.com")!,
+            taskFactory: { _ in
+                let task = MockWebSocketTask()
+                createdTasks.append(task)
+                return task
+            }
+        )
+
+        var receivedFrames: [BridgeTransportFrame] = []
+        var disconnectErrors: [Error?] = []
+        transport.onReceive = { receivedFrames.append($0) }
+        transport.onDisconnect = { disconnectErrors.append($0) }
+
+        try transport.open()
+        XCTAssertEqual(createdTasks.count, 1)
+
+        createdTasks[0].triggerReceive(
+            .success(
+                .string(
+                    #"{"type":"event","sessionId":"session-1","event":{"type":"agent_message","text":"hello from legacy bridge"},"timestamp":1700000001}"#
+                )
+            )
+        )
+
+        XCTAssertTrue(
+            disconnectErrors.isEmpty,
+            "legacy bridge event frames should not disconnect the client"
+        )
+        XCTAssertEqual(receivedFrames.count, 1)
+        guard receivedFrames.count == 1 else {
+            return
+        }
+
+        guard case let .bridge(message) = receivedFrames[0] else {
+            return XCTFail("expected a bridge frame")
+        }
+        guard case let .event(sessionId, event, _, timestamp) = message else {
+            return XCTFail("expected an event bridge message")
+        }
+
+        XCTAssertEqual(sessionId, "session-1")
+        XCTAssertEqual(event, .agentMessage(text: "hello from legacy bridge"))
+        XCTAssertEqual(timestamp, 1_700_000_001)
+    }
 }
 
 private enum MockTransportError: Error {

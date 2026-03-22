@@ -12,7 +12,7 @@ import { networkInterfaces } from "node:os";
 import { randomBytes } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BridgeMessage, PhoneMessage } from "@codepilot/protocol";
+import { SESSION_REPLAY_CAPABILITY, type BridgeMessage, type PhoneMessage } from "@codepilot/protocol";
 import type { TransportClient, TransportServer } from "./types.js";
 import {
   generateKeyPair,
@@ -254,7 +254,12 @@ export class LocalTransport implements TransportServer {
                   this.clients.set(clientId, client);
 
                   // Reply in plaintext (this is the last plaintext message)
-                  ws.send(JSON.stringify({ type: "handshake_ok", encrypted: true, clientId }));
+                  ws.send(JSON.stringify({
+                    type: "handshake_ok",
+                    encrypted: true,
+                    clientId,
+                    capabilities: [SESSION_REPLAY_CAPABILITY],
+                  }));
 
                   const tc = this.makeTransportClient(client);
                   for (const handler of this.connectHandlers) {

@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import type { PhoneMessage } from "@codepilot/protocol";
+import { SESSION_REPLAY_CAPABILITY, type PhoneMessage } from "@codepilot/protocol";
 import {
   decrypt,
   deriveSessionKey,
@@ -145,6 +145,7 @@ test("relay handshake enables encrypted messaging and authenticated lifecycle", 
 
   const handshake = JSON.parse(ws.sent.at(-1) ?? "{}");
   assert.equal(handshake.type, "handshake_ok");
+  assert.deepEqual(handshake.capabilities, [SESSION_REPLAY_CAPABILITY]);
   assert.equal(connected, 1);
 
   ws.sent.length = 0;

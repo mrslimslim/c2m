@@ -57,6 +57,39 @@ final class SessionRoutingTests: XCTestCase {
         XCTAssertEqual(sessionStore.lastAppliedEventID(for: session.id), 1)
     }
 
+    func testLegacyEventWithoutEventIDStillAppendsTimelineContent() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(
+            .event(
+                sessionId: session.id,
+                event: .agentMessage(text: "legacy output"),
+                eventId: 0,
+                timestamp: 1
+            )
+        )
+
+        XCTAssertEqual(
+            timelineStore.timeline(for: session.id).map(\.kind),
+            [.agentMessage(text: "legacy output")]
+        )
+        XCTAssertNil(
+            sessionStore.lastAppliedEventID(for: session.id),
+            "legacy events should remain compatible without inventing replay cursors"
+        )
+    }
+
     func testSessionSyncCompleteResolvedSessionIDMigratesReplayState() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
