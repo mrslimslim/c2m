@@ -114,11 +114,13 @@ public final class SessionStore {
         }
         for (id, incoming) in incomingById {
             if let existing = previousById[id] ?? previousById[remaps.first(where: { $0.to == id })?.from ?? ""] {
-                // If we locally know the session is idle/error but server says busy, keep local state
+                // Prefer the more recent terminal/busy state during reconnect merges.
+                // session_list can lag behind events, but restored local snapshots can also
+                // lag behind a session that is still actively running on the bridge.
                 let localIsTerminal = existing.state == .idle || existing.state == .error
                 let incomingIsBusy = incoming.state == .thinking || incoming.state == .coding
                     || incoming.state == .runningCommand || incoming.state == .waitingApproval
-                if localIsTerminal && incomingIsBusy {
+                if localIsTerminal && incomingIsBusy && existing.lastActiveAt >= incoming.lastActiveAt {
                     merged[id] = SessionInfo(
                         id: incoming.id,
                         agentType: incoming.agentType,

@@ -63,6 +63,70 @@ final class StoreSnapshotTests: XCTestCase {
         )
     }
 
+    func testTimelineStoreReplacesRunningCommandWithCompletedEntry() {
+        let store = TimelineStore()
+
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: nil, exitCode: nil, status: .running),
+            timestamp: 10
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done),
+            timestamp: 20
+        )
+
+        XCTAssertEqual(
+            store.timeline(for: "session-1"),
+            [
+                .init(
+                    timestamp: 10,
+                    kind: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done)
+                )
+            ]
+        )
+    }
+
+    func testTimelineStoreKeepsLaterRunOfSameCommandAsSeparateEntry() {
+        let store = TimelineStore()
+
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: nil, exitCode: nil, status: .running),
+            timestamp: 10
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done),
+            timestamp: 20
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: nil, exitCode: nil, status: .running),
+            timestamp: 30
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "swift test", output: "still ok", exitCode: 0, status: .done),
+            timestamp: 40
+        )
+
+        XCTAssertEqual(
+            store.timeline(for: "session-1"),
+            [
+                .init(
+                    timestamp: 10,
+                    kind: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done)
+                ),
+                .init(
+                    timestamp: 30,
+                    kind: .commandExec(command: "swift test", output: "still ok", exitCode: 0, status: .done)
+                ),
+            ]
+        )
+    }
+
     func testConversationSnapshotStoreRoundTripsSessionTimelineFilesAndConnectionMapping() throws {
         let suiteName = "ConversationSnapshotStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -112,6 +176,66 @@ final class StoreSnapshotTests: XCTestCase {
         let snapshot = try JSONDecoder().decode(SessionStoreSnapshot.self, from: data)
 
         XCTAssertEqual(snapshot.lastAppliedEventIdBySessionID, [String: Int]())
+    }
+
+    func testSessionStoreAcceptsNewerBusySessionListStateOverOlderLocalIdleState() {
+        let store = SessionStore()
+        store.upsert(
+            .init(
+                id: "session-1",
+                agentType: .codex,
+                workDir: "/tmp/repo",
+                state: .idle,
+                createdAt: 100,
+                lastActiveAt: 100
+            )
+        )
+
+        _ = store.applySessionList(
+            [
+                .init(
+                    id: "session-1",
+                    agentType: .codex,
+                    workDir: "/tmp/repo",
+                    state: .runningCommand,
+                    createdAt: 100,
+                    lastActiveAt: 200
+                )
+            ]
+        )
+
+        XCTAssertEqual(store.session(for: "session-1")?.state, .runningCommand)
+        XCTAssertEqual(store.session(for: "session-1")?.lastActiveAt, 200)
+    }
+
+    func testSessionStoreRejectsOlderBusySessionListStateWhenLocalIdleStateIsNewer() {
+        let store = SessionStore()
+        store.upsert(
+            .init(
+                id: "session-1",
+                agentType: .codex,
+                workDir: "/tmp/repo",
+                state: .idle,
+                createdAt: 100,
+                lastActiveAt: 200
+            )
+        )
+
+        _ = store.applySessionList(
+            [
+                .init(
+                    id: "session-1",
+                    agentType: .codex,
+                    workDir: "/tmp/repo",
+                    state: .thinking,
+                    createdAt: 100,
+                    lastActiveAt: 100
+                )
+            ]
+        )
+
+        XCTAssertEqual(store.session(for: "session-1")?.state, .idle)
+        XCTAssertEqual(store.session(for: "session-1")?.lastActiveAt, 200)
     }
 }
 

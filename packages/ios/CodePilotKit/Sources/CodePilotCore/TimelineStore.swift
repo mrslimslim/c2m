@@ -52,25 +52,50 @@ public final class TimelineStore {
     }
 
     public func appendBridgeEvent(sessionId: String, event: AgentEvent, timestamp: Int) {
-        let kind: TimelineItem.Kind
         switch event {
         case let .status(state, message):
-            kind = .status(state: state, message: message)
+            appendSessionItem(
+                .init(timestamp: timestamp, kind: .status(state: state, message: message)),
+                sessionId: sessionId
+            )
         case let .thinking(text):
-            kind = .thinking(text: text)
+            appendSessionItem(
+                .init(timestamp: timestamp, kind: .thinking(text: text)),
+                sessionId: sessionId
+            )
         case let .codeChange(changes):
-            kind = .codeChange(changes: changes)
+            appendSessionItem(
+                .init(timestamp: timestamp, kind: .codeChange(changes: changes)),
+                sessionId: sessionId
+            )
         case let .commandExec(command, output, exitCode, status):
-            kind = .commandExec(command: command, output: output, exitCode: exitCode, status: status)
+            upsertCommandExec(
+                sessionId: sessionId,
+                command: command,
+                output: output,
+                exitCode: exitCode,
+                status: status,
+                timestamp: timestamp
+            )
         case let .agentMessage(text):
-            kind = .agentMessage(text: text)
+            appendSessionItem(
+                .init(timestamp: timestamp, kind: .agentMessage(text: text)),
+                sessionId: sessionId
+            )
         case let .error(message):
-            kind = .sessionError(message: message)
+            appendSessionItem(
+                .init(timestamp: timestamp, kind: .sessionError(message: message)),
+                sessionId: sessionId
+            )
         case let .turnCompleted(summary, filesChanged, usage):
-            kind = .turnCompleted(summary: summary, filesChanged: filesChanged, usage: usage)
+            appendSessionItem(
+                .init(
+                    timestamp: timestamp,
+                    kind: .turnCompleted(summary: summary, filesChanged: filesChanged, usage: usage)
+                ),
+                sessionId: sessionId
+            )
         }
-
-        appendSessionItem(.init(timestamp: timestamp, kind: kind), sessionId: sessionId)
     }
 
     public func appendTransportError(_ message: String, timestamp: Int? = nil) {
@@ -128,12 +153,69 @@ public final class TimelineStore {
         lock.lock()
         defer { lock.unlock() }
         var items = sessionTimelines[sessionId, default: []]
+        insertSessionItem(item, into: &items)
+        sessionTimelines[sessionId] = items
+    }
+
+    private func upsertCommandExec(
+        sessionId: String,
+        command: String,
+        output: String?,
+        exitCode: Int?,
+        status: CommandExecStatus,
+        timestamp: Int
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var items = sessionTimelines[sessionId, default: []]
+
+        // Bridge command events do not carry a command id, so we only collapse the
+        // most recent in-flight copy of the same command.
+        if let existingIndex = items.lastIndex(where: {
+            guard case let .commandExec(existingCommand, _, _, existingStatus) = $0.kind else {
+                return false
+            }
+            return existingCommand == command && existingStatus == .running
+        }) {
+            let previousPayload = commandExecPayload(from: items[existingIndex].kind)
+            items[existingIndex] = .init(
+                timestamp: items[existingIndex].timestamp,
+                kind: .commandExec(
+                    command: command,
+                    output: output ?? previousPayload?.output,
+                    exitCode: exitCode ?? previousPayload?.exitCode,
+                    status: status
+                )
+            )
+        } else {
+            insertSessionItem(
+                .init(
+                    timestamp: timestamp,
+                    kind: .commandExec(command: command, output: output, exitCode: exitCode, status: status)
+                ),
+                into: &items
+            )
+        }
+
+        sessionTimelines[sessionId] = items
+    }
+
+    private func insertSessionItem(_ item: TimelineItem, into items: inout [TimelineItem]) {
         if let insertIndex = items.firstIndex(where: { $0.timestamp > item.timestamp }) {
             items.insert(item, at: insertIndex)
         } else {
             items.append(item)
         }
-        sessionTimelines[sessionId] = items
+    }
+
+    private func commandExecPayload(
+        from kind: TimelineItem.Kind
+    ) -> (command: String, output: String?, exitCode: Int?, status: CommandExecStatus)? {
+        guard case let .commandExec(command, output, exitCode, status) = kind else {
+            return nil
+        }
+        return (command, output, exitCode, status)
     }
 
     private static func nowMillis() -> Int {
