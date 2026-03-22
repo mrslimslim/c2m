@@ -7,6 +7,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use codepilot_agents::types::AgentError;
+pub use codepilot_agents::types::{AgentAdapter, SessionOptions};
 use codepilot_core::{
     security::validate_file_request_path,
     session_store::event_log::{
@@ -16,11 +18,8 @@ use codepilot_core::{
 };
 use codepilot_protocol::{
     events::AgentEvent,
-    messages::{
-        ApprovalPolicy, BridgeMessage, ModelReasoningEffort, PhoneMessage, SandboxMode,
-        SessionConfig,
-    },
-    state::{AgentState, AgentType, DiffFile, DiffHunk, SessionInfo},
+    messages::{BridgeMessage, PhoneMessage, SessionConfig},
+    state::{AgentState, DiffFile, DiffHunk, SessionInfo},
 };
 
 use crate::transport::types::TransportClient;
@@ -54,6 +53,12 @@ impl From<codepilot_core::session_store::event_log::SessionStoreError> for Bridg
     }
 }
 
+impl From<AgentError> for BridgeError {
+    fn from(value: AgentError) -> Self {
+        Self(value.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, BridgeError>;
 pub type PersistedBridgeEvent = PersistedSessionEvent;
 
@@ -63,29 +68,6 @@ pub struct BridgeOptions {
     pub port: u16,
     pub host: Option<String>,
     pub work_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionOptions {
-    pub work_dir: PathBuf,
-    pub model: Option<String>,
-    pub model_reasoning_effort: Option<ModelReasoningEffort>,
-    pub approval_policy: Option<ApprovalPolicy>,
-    pub sandbox_mode: Option<SandboxMode>,
-}
-
-pub trait AgentAdapter: Send {
-    fn name(&self) -> AgentType;
-    fn start_session(&mut self, options: SessionOptions) -> Result<SessionInfo>;
-    fn execute(
-        &mut self,
-        session_id: &str,
-        input: &str,
-        on_event: &mut dyn FnMut(AgentEvent),
-        options: Option<SessionOptions>,
-    ) -> Result<()>;
-    fn cancel(&mut self, session_id: &str);
-    fn delete_session(&mut self, session_id: &str);
 }
 
 pub trait DiffServiceApi: Send + Sync {
@@ -192,7 +174,7 @@ impl Bridge {
             } => self.handle_command(client, &text, session_id, config),
             PhoneMessage::Cancel { session_id } => {
                 if let Some(adapter) = self.adapter.as_mut() {
-                    adapter.cancel(&session_id);
+                    adapter.cancel(&session_id)?;
                 }
                 self.persist_and_dispatch_event(
                     &session_id,
@@ -209,7 +191,7 @@ impl Bridge {
             } => self.handle_file_request(client, &path),
             PhoneMessage::DeleteSession { session_id } => {
                 if let Some(adapter) = self.adapter.as_mut() {
-                    adapter.delete_session(&session_id);
+                    adapter.delete_session(&session_id)?;
                 }
                 self.sessions.remove(&session_id);
                 self.broadcast(BridgeMessage::SessionList {

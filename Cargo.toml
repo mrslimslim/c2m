@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/codepilot-agents",
     "crates/codepilot-bridge",
     "crates/codepilot-core",
     "crates/codepilot-protocol",

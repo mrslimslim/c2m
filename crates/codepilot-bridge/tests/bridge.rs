@@ -74,7 +74,7 @@ impl AgentAdapter for FakeAdapter {
     fn start_session(
         &mut self,
         options: SessionOptions,
-    ) -> codepilot_bridge::bridge::Result<SessionInfo> {
+    ) -> codepilot_agents::types::Result<SessionInfo> {
         self.start_calls += 1;
         Ok(SessionInfo {
             id: "session-1".to_owned(),
@@ -92,7 +92,7 @@ impl AgentAdapter for FakeAdapter {
         input: &str,
         on_event: &mut dyn FnMut(AgentEvent),
         _options: Option<SessionOptions>,
-    ) -> codepilot_bridge::bridge::Result<()> {
+    ) -> codepilot_agents::types::Result<()> {
         self.execute_calls += 1;
         on_event(AgentEvent::Status {
             state: AgentState::Thinking,
@@ -101,11 +101,25 @@ impl AgentAdapter for FakeAdapter {
         Ok(())
     }
 
-    fn cancel(&mut self, session_id: &str) {
-        self.cancel_calls.push(session_id.to_owned());
+    fn resume_session(&mut self, session_id: &str) -> codepilot_agents::types::Result<SessionInfo> {
+        Ok(SessionInfo {
+            id: session_id.to_owned(),
+            agent_type: AgentType::Codex,
+            work_dir: "/tmp/project".to_owned(),
+            state: AgentState::Idle,
+            created_at: 1_000,
+            last_active_at: 1_000,
+        })
     }
 
-    fn delete_session(&mut self, _session_id: &str) {}
+    fn cancel(&mut self, session_id: &str) -> codepilot_agents::types::Result<()> {
+        self.cancel_calls.push(session_id.to_owned());
+        Ok(())
+    }
+
+    fn delete_session(&mut self, _session_id: &str) -> codepilot_agents::types::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+codepilot-agents = { path = "../codepilot-agents" }
 codepilot-core = { path = "../codepilot-core" }
 codepilot-protocol = { path = "../codepilot-protocol" }
 serde_json = "1"
