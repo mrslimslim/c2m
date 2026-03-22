@@ -5,10 +5,10 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 ## Current Runtime Assumptions
 
 - Rust Cargo workspace is the default build and test runtime for the repository.
-- End-to-end iOS device QA still uses the legacy bridge launch path as a temporary fallback until the final runtime cutover removes it.
+- End-to-end iOS device QA now uses the Rust bridge launch path directly.
 - The app may save multiple connection configs, but it only keeps one live bridge connection at a time.
 - LAN is the primary baseline path.
-- Relay is supported and should be verified, but it is not the default self-use path.
+- Tunnel mode is the supported public-network path when you need to verify off-LAN pairing.
 - Saved projects persist across launches, and bridge-side pairing material now stays stable by default for the same working directory.
 - Re-scanning may still be required if the bridge advertises a different reachable host, uses a different working directory, or the pairing state is intentionally reset.
 - The slash command menu is protocol-driven. The bridge chooses the slash catalog by adapter type and detected adapter version.
@@ -17,7 +17,7 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 
 - One physical iPhone running the latest local build or TestFlight build.
 - One Mac running the CodePilot bridge on the same LAN as the phone.
-- Optional: a reachable Relay deployment for cross-network verification.
+- Optional: internet access for Cloudflare Tunnel verification.
 - A test repo with at least one readable file such as `README.md`.
 
 ## Preflight
@@ -28,28 +28,22 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 pnpm run build
 ```
 
-2. Build the temporary legacy bridge fallback used for device QA:
+2. For LAN verification, start the Rust bridge in Codex mode:
 
 ```bash
-pnpm run legacy:build
+pnpm run bridge -- --agent codex --dir /absolute/path/to/test-repo
 ```
 
-3. For LAN verification, start the legacy bridge binary:
+3. For public-network verification, start the Rust bridge with tunnel mode:
 
 ```bash
-pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --dir /absolute/path/to/test-repo
+pnpm run bridge -- --agent codex --tunnel --dir /absolute/path/to/test-repo
 ```
 
-4. For Relay verification, start the legacy bridge in relay mode:
-
-```bash
-pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --relay --dir /absolute/path/to/test-repo
-```
-
-5. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port` or `relay`/`channel`, plus `bridge_pubkey` and `otp`.
-6. If you are validating Codex slash commands, also confirm `codex --version` matches the catalog you expect. The current baseline is `codex-cli 0.116.0`.
-7. Install the iOS app on a physical device.
-8. If you want a clean run, delete any previously saved projects in the app before starting.
+4. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port`, plus `bridge_pubkey` and `otp`. In tunnel mode the payload should also include `tunnel: true`.
+5. If you are validating Codex slash commands, also confirm `codex --version` matches the catalog you expect. The current baseline is `codex-cli 0.116.0`.
+6. Install the iOS app on a physical device.
+7. If you want a clean run, delete any previously saved projects in the app before starting.
 
 ## Pass Criteria
 
@@ -60,7 +54,7 @@ pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --relay --dir 
 - The slash menu reflects the bridge-provided catalog, including nested workflows, current/default config badges, and disabled reasons.
 - `/model` updates both `model` and `modelReasoningEffort`, and `/permissions` updates `approvalPolicy` and `sandboxMode`.
 - Diagnostics are useful and redact sensitive values such as `token`, `otp`, and ciphertext.
-- Relay and LAN both work as intended for the currently supported single-active-connection runtime model.
+- Tunnel mode and LAN both work as intended for the currently supported single-active-connection runtime model.
 
 ## Scenario 1: Fresh LAN Pairing Via QR
 
@@ -135,29 +129,29 @@ pnpm --filter @codepilot/bridge exec node ./dist/bin/codepilot.js --relay --dir 
 - The app saves the project and connects successfully.
 - Returning to the home screen shows the new project in the saved list.
 
-## Scenario 4: Relay Pairing
+## Scenario 4: Tunnel Pairing
 
 **Setup**
 
-- Bridge is running with `--relay` or `--relay-url ...`.
-- The phone can reach the relay endpoint.
+- Bridge is running with `--tunnel`.
+- The phone can reach the public internet.
 
 **Steps**
 
-1. Pair using the relay QR code or a pasted relay payload.
+1. Pair using the tunnel QR code or a pasted tunnel payload.
 2. Open the project after it appears in the saved list.
 3. Wait for the connection to settle.
 
 **Expected**
 
 - The project connects without needing local-network discovery.
-- Diagnostics should show relay-related connection activity rather than a LAN host/port attempt.
+- Diagnostics should show the tunnel-advertised endpoint rather than a LAN host/port attempt.
 - The project behaves the same as LAN once connected.
 
 **Failure clues**
 
-- If the relay path pairs but never reaches connected, capture both app diagnostics and relay or bridge logs.
-- If LAN works but relay does not, treat it as a relay transport problem first, not a session UI problem.
+- If the tunnel path pairs but never reaches connected, capture both app diagnostics and bridge logs.
+- If LAN works but tunnel does not, treat it as a public connectivity or tunnel transport problem first, not a session UI problem.
 
 ## Scenario 5: Saved Connection Restore On Relaunch
 
@@ -188,7 +182,7 @@ This is intentional behavior in the current self-use runtime model.
 
 **Setup**
 
-- Save at least two projects, for example one LAN project and one Relay project.
+- Save at least two projects, for example one LAN project and one tunnel-backed project.
 
 **Steps**
 
@@ -354,7 +348,7 @@ This is intentional behavior in the current self-use runtime model.
 
 **Setup**
 
-- A project is connected over LAN or Relay.
+- A project is connected over LAN or tunnel mode.
 - The bridge advertises `slash_catalog_v1`.
 - For Codex, the version probe currently reports `codex-cli 0.116.0`.
 
@@ -391,7 +385,7 @@ This is intentional behavior in the current self-use runtime model.
 
 1. Interrupt connectivity:
    - for LAN, briefly disable Wi-Fi on the phone or stop the bridge, then restore it
-   - for Relay, temporarily stop the relay path or disconnect the network
+   - for tunnel mode, temporarily stop the bridge or disconnect the network
 2. Watch the project state and diagnostics.
 3. Restore connectivity.
 
@@ -432,7 +426,7 @@ Do not treat simulator-only results as sufficient for QR scanning, camera permis
 
 ## What To Capture For A Bug Report
 
-- Whether the path was LAN or Relay.
+- Whether the path was LAN or tunnel mode.
 - Whether pairing came from QR, pasted payload, or manual entry.
 - Device model and iOS version.
 - Whether the issue reproduces after app relaunch.

@@ -16,11 +16,7 @@
     "bridge:help": "cargo run -p codepilot-bridge -- --help",
     "relay:dev": "cd crates/codepilot-relay-worker && npx wrangler dev",
     "relay:deploy": "cd crates/codepilot-relay-worker && npx wrangler deploy",
-    "clean": "cargo clean",
-    "legacy:build": "pnpm -r build",
-    "legacy:test": "pnpm -r build && pnpm --filter @codepilot/bridge test",
-    "legacy:dev": "pnpm -r --parallel dev",
-    "legacy:clean": "pnpm -r clean"
+    "clean": "cargo clean"
   },
   "engines": {
     "node": ">=18"

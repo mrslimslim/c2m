@@ -9,6 +9,7 @@ base64 = "0.22"
 codepilot-protocol = { path = "../codepilot-protocol" }
 hex = "0.4"
 hkdf = "0.12"
+qrcode = "0.14"
 rand = "0.9"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

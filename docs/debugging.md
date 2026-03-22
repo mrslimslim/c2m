@@ -12,7 +12,6 @@
 4. [Relay 本地调试](#4-relay-本地调试)
 5. [核心 Smoke Checks](#5-核心-smoke-checks)
 6. [常见问题排查](#6-常见问题排查)
-7. [Legacy fallback](#7-legacy-fallback)
 
 ---
 
@@ -24,8 +23,8 @@
 |------|------|------|
 | Rust | stable | 默认构建、测试和桥接运行时 |
 | Cargo | 随 Rust 安装 | 负责 workspace 构建和测试 |
-| Node.js | >= 18 | `npx wrangler` 与 legacy 对照脚本需要 |
-| pnpm | >= 8 | 运行根脚本与保留的 legacy 命令 |
+| Node.js | >= 18 | `npx wrangler` 与根级 `pnpm run` 包装命令需要 |
+| pnpm | >= 8 | 运行根脚本 |
 
 ### 1.2 推荐安装
 
@@ -65,7 +64,8 @@ export OPENAI_API_KEY="sk-..."
 | `pnpm run test:relay` | 只跑 Relay Worker crate 测试 |
 | `pnpm run test:agents` | 只跑 agent adapter 测试 |
 | `pnpm run bridge:help` | 查看当前 Rust Bridge CLI 参数面 |
-| `pnpm run bridge -- --agent claude --dir ~/my-project` | 以 Rust CLI 形式传参给 Bridge 二进制 |
+| `pnpm run bridge -- --agent codex --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge |
+| `pnpm run bridge -- --agent codex --tunnel --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge，并附加 Cloudflare Tunnel |
 | `pnpm run relay:dev` | 在 Rust Relay crate 目录下启动 `wrangler dev` |
 | `pnpm run relay:deploy` | 部署 Rust Relay Worker |
 
@@ -117,10 +117,16 @@ cargo test -p codepilot-agents
 ### 3.3 手动运行 Bridge 二进制
 
 ```bash
-pnpm run bridge -- --agent auto --dir .
+pnpm run bridge -- --agent codex --dir .
 ```
 
-如果你只是想确认当前 Rust CLI 是否可运行，优先用 `pnpm run bridge:help`。如果你要验证更深的 Bridge 行为，优先跑 `codepilot-bridge` 与 `codepilot-core` 的测试，而不是回到旧的 TypeScript 启动方式。
+如果你需要公网可达的 pairing payload，可直接运行：
+
+```bash
+pnpm run bridge -- --agent codex --tunnel --dir .
+```
+
+如果你只是想确认当前 Rust CLI 是否可运行，优先用 `pnpm run bridge:help`。如果你要验证更深的 Bridge 行为，优先跑 `codepilot-bridge` 与 `codepilot-core` 的测试。
 
 ---
 
@@ -260,17 +266,3 @@ which claude
 
 **原因**：另一个 Cargo 进程正在使用同一个 artifact 或 package cache。
 **解决**：等待现有任务结束，或终止重复的 Cargo 命令后重试。
-
----
-
-## 7. Legacy fallback
-
-如果你必须对照旧实现，例如需要暂时复用旧测试客户端或做最终 parity 对比，可用：
-
-```bash
-pnpm run legacy:build
-pnpm run legacy:test
-pnpm run legacy:dev
-```
-
-这些命令只作为临时 fallback 保留，不再代表项目的默认运行时。

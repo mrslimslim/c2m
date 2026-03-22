@@ -159,6 +159,12 @@ impl Bridge {
         }
     }
 
+    pub fn handle_client_disconnected(&mut self, client_id: &str) {
+        self.connected_clients.remove(client_id);
+        self.replay_states
+            .retain(|key, _| !key.starts_with(&format!("{client_id}:")));
+    }
+
     pub fn handle_message(
         &mut self,
         client: Arc<dyn TransportClient>,
@@ -375,10 +381,9 @@ impl Bridge {
                 self.resolve_canonical_session_id(&existing)?
             }
             _ => {
-                let session = {
-                    let adapter = self.adapter.as_mut().expect("adapter checked above");
-                    adapter.start_session(session_options.clone())?
-                };
+                let mut adapter = self.adapter.take().expect("adapter checked above");
+                let session = adapter.start_session(session_options.clone())?;
+                self.adapter = Some(adapter);
                 let id = session.id.clone();
                 self.sessions.insert(id.clone(), session);
                 broadcast_session_list = true;
@@ -392,21 +397,29 @@ impl Bridge {
             });
         }
 
-        let mut events = Vec::new();
-        {
-            let adapter = self.adapter.as_mut().expect("adapter checked above");
-            adapter.execute(
-                &session_id,
-                text,
-                &mut |event| events.push(event),
-                config.map(|_| session_options.clone()),
-            )?;
+        let mut adapter = self.adapter.take().expect("adapter checked above");
+        let mut callback_error = None;
+        let execute_result = adapter.execute(
+            &session_id,
+            text,
+            &mut |event| {
+                if callback_error.is_some() {
+                    return;
+                }
+
+                if let Err(error) = self.persist_and_dispatch_event(&session_id, event) {
+                    callback_error = Some(error);
+                }
+            },
+            config.map(|_| session_options.clone()),
+        );
+        self.adapter = Some(adapter);
+
+        if let Some(error) = callback_error {
+            return Err(error);
         }
 
-        for event in events {
-            self.persist_and_dispatch_event(&session_id, event)?;
-        }
-
+        execute_result?;
         Ok(())
     }
 

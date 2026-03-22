@@ -14,7 +14,6 @@
 4. [兼容性边界](#4-兼容性边界)
 5. [构建与部署](#5-构建与部署)
 6. [开发参考](#6-开发参考)
-7. [Legacy fallback](#7-legacy-fallback)
 
 ---
 
@@ -22,7 +21,7 @@
 
 ### 1.1 定位
 
-CodePilot 是一个“手机远程控制 AI 编程代理”的系统。手机端发送自然语言指令，Bridge 负责维护会话、路由命令、保存事件日志，并把代理事件流回传到手机；跨网络场景通过 Cloudflare Workers Durable Objects Relay 中继。
+CodePilot 是一个“手机远程控制 AI 编程代理”的系统。手机端发送自然语言指令，Bridge 负责维护会话、路由命令、保存事件日志，并把代理事件流回传到手机；公网访问默认通过 Cloudflare Tunnel 暴露当前 Bridge。
 
 ### 1.2 当前默认运行时
 
@@ -34,15 +33,13 @@ CodePilot 是一个“手机远程控制 AI 编程代理”的系统。手机端
 - `crates/codepilot-bridge` 负责 Bridge 编排和 CLI 入口
 - `crates/codepilot-relay-worker` 负责 Cloudflare Workers Relay
 
-旧的 TypeScript monorepo 仍然保留，用作最终清理前的行为对照基线，但不再是默认构建和调试入口。
-
 ### 1.3 核心能力
 
 | 能力 | 说明 |
 |------|------|
 | 多代理支持 | Codex 与 Claude 适配器统一映射到 `AgentAdapter` trait |
 | 会话回放 | 事件持久化到 JSONL 日志，支持 alias 解析与增量重放 |
-| 跨网络中继 | Relay 仍然运行在 Cloudflare Workers + Durable Objects |
+| 公网接入 | Bridge 可选启动 Cloudflare Tunnel，对外暴露当前本地 WebSocket 服务 |
 | E2E 加密 | X25519 + HKDF + AES-256-GCM，Relay 无法解密消息 |
 | 路径安全 | 文件请求经过工作目录沙箱和敏感文件黑名单校验 |
 | Slash catalog | 由 Bridge 按适配器版本生成元数据，客户端只负责渲染 |
@@ -54,7 +51,7 @@ CodePilot 是一个“手机远程控制 AI 编程代理”的系统。手机端
 - **加密**: `x25519-dalek`, `hkdf`, `aes-gcm`, `sha2`
 - **CLI**: `clap`
 - **Relay**: `workers-rs`, Cloudflare Workers, Durable Objects
-- **Node.js**: 仅用于 `wrangler` 和 legacy parity 对照脚本
+- **Node.js**: 仅用于 `npx wrangler` 与根级脚本包装
 
 ---
 
@@ -111,8 +108,10 @@ codepilot-agents      codepilot-relay-worker
 └──────────┘                 └──────────────┘                │ Claude    │
       │                               │                      └───────────┘
       │           optional            │
-      └───────────────► Relay Worker ◄┘
-                        (Workers DO)
+      ├────────────► Cloudflare Tunnel
+      │
+      └────────────► Relay Worker
+                     (Workers DO)
 ```
 
 ### 3.2 `codepilot-protocol`
@@ -156,19 +155,20 @@ Bridge crate 当前负责：
 - 维护 `SessionInfo`、session alias 与连接客户端
 - 持久化事件并支持 `sync_session`
 - 处理 diff 请求、slash action 和文件读取请求
+- 启动本地 WebSocket 服务，并在需要时附加 Cloudflare Tunnel
 - 对外暴露 `CliArgs` 作为默认 Rust 启动入口
 
 当前 CLI 参数面保持精简：`--agent`、`--dir`、`--tunnel`。更细的路由、回放、slash、diff 和安全行为通过 crate 集成测试验证，而不是依赖旧的 Node CLI。
 
 ### 3.6 `codepilot-relay-worker`
 
-Relay 仍然遵循原始 Cloudflare 模型，但实现迁移到了 Rust Worker crate：
+Relay Worker 仍然遵循原始 Cloudflare 模型，但实现迁移到了 Rust Worker crate：
 
 - `GET /health` 返回健康检查 JSON
 - `GET /ws?device=bridge|phone&channel=<id>` 升级到同一个 channel
 - Durable Object `Channel` 负责 socket 管理、离线缓存和 peer 状态通知
 
-Relay 保持“只转发密文、不解密消息”的零知识设计。
+Relay 保持“只转发密文、不解密消息”的零知识设计。当前默认 Bridge 启动路径优先使用本地 WebSocket 加 `--tunnel` 的公网暴露模式；Relay Worker crate 保留为独立构建与部署目标。
 
 ---
 
@@ -226,7 +226,14 @@ Bridge 的默认 Rust 入口是：
 cargo run -p codepilot-bridge -- --help
 ```
 
-当前 cutover 阶段，CLI 主要用于参数面 smoke check 与后续 runtime 接线；消息路由、session replay、slash catalog、diff 加载和安全校验以集成测试作为主验证手段。
+常见启动方式：
+
+```bash
+cargo run -p codepilot-bridge -- --agent codex --dir .
+cargo run -p codepilot-bridge -- --agent codex --tunnel --dir .
+```
+
+消息路由、session replay、slash catalog、diff 加载和安全校验以集成测试作为主验证手段。
 
 ### 5.3 Relay 部署
 
@@ -287,15 +294,3 @@ cargo test -p codepilot-relay-worker
 2. 为路由或 channel 逻辑补充 crate tests
 3. 重新运行 `pnpm run build:relay`
 4. 通过 `pnpm run relay:dev` 做本地 Worker smoke check
-
----
-
-## 7. Legacy fallback
-
-以下目录仍保留为最终清理前的对照基线：
-
-- `packages/protocol`
-- `packages/bridge`
-- `packages/relay`
-
-仅当你需要做最终 parity 对比，或暂时依赖旧的 HTML 测试客户端时，才使用这些 legacy 入口。默认情况下请优先使用 Rust workspace 与根级 Cargo/Wrangler 脚本。
