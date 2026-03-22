@@ -1,0 +1,13 @@
+name = "codepilot-relay"
+main = "build/worker/shim.mjs"
+compatibility_date = "2025-01-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[durable_objects]
+bindings = [{ name = "CHANNEL", class_name = "Channel" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Channel"]
