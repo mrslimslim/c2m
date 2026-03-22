@@ -19,6 +19,15 @@ interface TestClient {
 interface BridgeInternals {
   transport: { broadcast: (message?: unknown) => void };
   adapter: AgentAdapter;
+  diffService: {
+    loadDiff: (sessionId: string, eventId: number) => Promise<RecordedMessage>;
+    loadMoreHunks: (
+      sessionId: string,
+      eventId: number,
+      path: string,
+      afterHunkIndex: number,
+    ) => Promise<RecordedMessage>;
+  };
   adapterVersion?: string;
   handleCommand: (
     client: TestClient,
@@ -1315,4 +1324,121 @@ test("Bridge delete_session cancels busy sessions before removing them", async (
   assert.equal(bridgeAny.sessions.has(busySession.id), false);
   assert.deepEqual(broadcasts, [{ type: "session_list", sessions: [] }]);
   assert.deepEqual(clientMessages, []);
+});
+
+test("Bridge routes diff_req to diff_content for the requesting client", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    const client = createClient("client-diff");
+    connectClient(bridgeAny, client);
+
+    let recordedRequest: RecordedMessage | null = null;
+    bridgeAny.diffService = {
+      loadDiff: async (sessionId, eventId) => {
+        recordedRequest = { sessionId, eventId };
+        return {
+          type: "diff_content",
+          sessionId,
+          eventId,
+          files: [
+            {
+              path: "Sources/App.swift",
+              kind: "update",
+              isTruncated: false,
+              totalHunkCount: 1,
+              loadedHunks: [],
+            },
+          ],
+        };
+      },
+      loadMoreHunks: async () => {
+        throw new Error("not used");
+      },
+    };
+
+    await bridgeAny.handleMessage(client, {
+      type: "diff_req",
+      sessionId: "session-1",
+      eventId: 42,
+    });
+
+    assert.deepEqual(recordedRequest, { sessionId: "session-1", eventId: 42 });
+    assert.deepEqual(client.sent[0], {
+      type: "diff_content",
+      sessionId: "session-1",
+      eventId: 42,
+      files: [
+        {
+          path: "Sources/App.swift",
+          kind: "update",
+          isTruncated: false,
+          totalHunkCount: 1,
+          loadedHunks: [],
+        },
+      ],
+    });
+  });
+});
+
+test("Bridge routes diff_hunks_req to diff_hunks_content for the requesting client", async () => {
+  await withBridgeHarness(async ({ bridgeAny }) => {
+    const client = createClient("client-diff-hunks");
+    connectClient(bridgeAny, client);
+
+    let recordedRequest: RecordedMessage | null = null;
+    bridgeAny.diffService = {
+      loadDiff: async () => {
+        throw new Error("not used");
+      },
+      loadMoreHunks: async (sessionId, eventId, path, afterHunkIndex) => {
+        recordedRequest = { sessionId, eventId, path, afterHunkIndex };
+        return {
+          type: "diff_hunks_content",
+          sessionId,
+          eventId,
+          path,
+          hunks: [
+            {
+              oldStart: 3,
+              oldLineCount: 1,
+              newStart: 3,
+              newLineCount: 2,
+              lines: [{ kind: "add", text: "+print(value)" }],
+            },
+          ],
+          nextHunkIndex: undefined,
+        };
+      },
+    };
+
+    await bridgeAny.handleMessage(client, {
+      type: "diff_hunks_req",
+      sessionId: "session-1",
+      eventId: 42,
+      path: "Sources/App.swift",
+      afterHunkIndex: 1,
+    });
+
+    assert.deepEqual(recordedRequest, {
+      sessionId: "session-1",
+      eventId: 42,
+      path: "Sources/App.swift",
+      afterHunkIndex: 1,
+    });
+    assert.deepEqual(client.sent[0], {
+      type: "diff_hunks_content",
+      sessionId: "session-1",
+      eventId: 42,
+      path: "Sources/App.swift",
+      hunks: [
+        {
+          oldStart: 3,
+          oldLineCount: 1,
+          newStart: 3,
+          newLineCount: 2,
+          lines: [{ kind: "add", text: "+print(value)" }],
+        },
+      ],
+      nextHunkIndex: undefined,
+    });
+  });
 });

@@ -2,6 +2,7 @@ import Foundation
 import CodePilotProtocol
 
 public struct TimelineItem: Codable, Equatable, Sendable {
+    public let eventId: Int?
     public enum Kind: Codable, Equatable, Sendable {
         case system(message: String)
         case userCommand(text: String)
@@ -129,7 +130,8 @@ public struct TimelineItem: Codable, Equatable, Sendable {
     public let timestamp: Int
     public let kind: Kind
 
-    public init(timestamp: Int, kind: Kind) {
+    public init(eventId: Int? = nil, timestamp: Int, kind: Kind) {
+        self.eventId = eventId
         self.timestamp = timestamp
         self.kind = kind
     }

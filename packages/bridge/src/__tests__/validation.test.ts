@@ -81,6 +81,28 @@ describe("validatePhoneMessage – valid messages", () => {
     assert.equal((result as any).type, "sync_session");
   });
 
+  it("accepts a valid diff_req message", () => {
+    const result = validatePhoneMessage({
+      type: "diff_req",
+      sessionId: "sess-1",
+      eventId: 42,
+    });
+    assert.notEqual(result, null);
+    assert.equal((result as any).type, "diff_req");
+  });
+
+  it("accepts a valid diff_hunks_req message", () => {
+    const result = validatePhoneMessage({
+      type: "diff_hunks_req",
+      sessionId: "sess-1",
+      eventId: 42,
+      path: "Sources/App.swift",
+      afterHunkIndex: 1,
+    });
+    assert.notEqual(result, null);
+    assert.equal((result as any).type, "diff_hunks_req");
+  });
+
   it("accepts a valid slash_action message", () => {
     const result = validatePhoneMessage({
       type: "slash_action",
@@ -146,6 +168,45 @@ describe("validatePhoneMessage – missing required fields", () => {
         type: "sync_session",
         sessionId: "sess-1",
         afterEventId: "not-a-number",
+      }),
+      null,
+    );
+  });
+
+  it("rejects diff_req without sessionId", () => {
+    assert.equal(
+      validatePhoneMessage({ type: "diff_req", eventId: 42 }),
+      null,
+    );
+  });
+
+  it("rejects diff_req without numeric eventId", () => {
+    assert.equal(
+      validatePhoneMessage({ type: "diff_req", sessionId: "sess-1", eventId: "42" }),
+      null,
+    );
+  });
+
+  it("rejects diff_hunks_req without path", () => {
+    assert.equal(
+      validatePhoneMessage({
+        type: "diff_hunks_req",
+        sessionId: "sess-1",
+        eventId: 42,
+        afterHunkIndex: 1,
+      }),
+      null,
+    );
+  });
+
+  it("rejects diff_hunks_req without numeric afterHunkIndex", () => {
+    assert.equal(
+      validatePhoneMessage({
+        type: "diff_hunks_req",
+        sessionId: "sess-1",
+        eventId: 42,
+        path: "Sources/App.swift",
+        afterHunkIndex: "1",
       }),
       null,
     );

@@ -189,6 +189,126 @@ final class SessionDetailViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.fileState(for: "Sources/App.swift"))
     }
 
+    func testRequestDiffMarksLoadingAndSendsDiffRequest() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diffStore = DiffStore()
+        let session = makeSession(id: "session-1", state: .coding)
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore
+        )
+
+        try viewModel.requestDiff(eventId: 42)
+
+        XCTAssertEqual(sender.messages, [.diffRequest(sessionId: session.id, eventId: 42)])
+        XCTAssertEqual(viewModel.diffState(for: 42)?.isLoading, true)
+    }
+
+    func testRequestMoreDiffHunksAppendsReturnedHunks() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diffStore = DiffStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .coding)
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore
+        )
+
+        try viewModel.requestDiff(eventId: 42)
+        router.handle(
+            .diffContent(
+                sessionId: session.id,
+                eventId: 42,
+                files: [
+                    .init(
+                        path: "Sources/App.swift",
+                        kind: .update,
+                        addedLines: 1,
+                        deletedLines: 1,
+                        isTruncated: false,
+                        totalHunkCount: 2,
+                        loadedHunks: [
+                            .init(
+                                oldStart: 1,
+                                oldLineCount: 1,
+                                newStart: 1,
+                                newLineCount: 2,
+                                lines: [
+                                    .init(kind: .delete, text: "-let value = 1"),
+                                    .init(kind: .add, text: "+let value = 2"),
+                                ]
+                            )
+                        ],
+                        nextHunkIndex: 1
+                    )
+                ]
+            )
+        )
+
+        try viewModel.requestMoreDiffHunks(eventId: 42, path: "Sources/App.swift", afterHunkIndex: 1)
+        XCTAssertEqual(
+            sender.messages,
+            [
+                .diffRequest(sessionId: session.id, eventId: 42),
+                .diffHunksRequest(
+                    sessionId: session.id,
+                    eventId: 42,
+                    path: "Sources/App.swift",
+                    afterHunkIndex: 1
+                ),
+            ]
+        )
+
+        router.handle(
+            .diffHunksContent(
+                sessionId: session.id,
+                eventId: 42,
+                path: "Sources/App.swift",
+                hunks: [
+                    .init(
+                        oldStart: 9,
+                        oldLineCount: 1,
+                        newStart: 10,
+                        newLineCount: 2,
+                        lines: [
+                            .init(kind: .context, text: " func run() {}"),
+                            .init(kind: .add, text: "+print(value)"),
+                        ]
+                    )
+                ],
+                nextHunkIndex: nil
+            )
+        )
+
+        XCTAssertEqual(viewModel.diffState(for: 42)?.files.first?.loadedHunks.count, 2)
+        XCTAssertFalse(viewModel.diffState(for: 42)?.loadingMorePaths.contains("Sources/App.swift") ?? true)
+    }
+
     func testSendSlashActionUsesResolvedSessionID() throws {
         let sender = MockPhoneMessageSender()
         let sessionStore = SessionStore()

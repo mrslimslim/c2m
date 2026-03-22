@@ -4,7 +4,7 @@
  */
 
 import type { AgentEvent } from "./events.js";
-import type { SessionInfo } from "./state.js";
+import type { DiffFile, DiffHunk, SessionInfo } from "./state.js";
 
 // ─── E2E Handshake ──────────────────────────────────────────────────
 
@@ -162,6 +162,20 @@ export interface SyncSessionMessage {
   afterEventId: number;
 }
 
+export interface DiffRequestMessage {
+  type: "diff_req";
+  sessionId: string;
+  eventId: number;
+}
+
+export interface DiffHunksRequestMessage {
+  type: "diff_hunks_req";
+  sessionId: string;
+  eventId: number;
+  path: string;
+  afterHunkIndex: number;
+}
+
 export type PhoneMessage =
   | CommandMessage
   | CancelMessage
@@ -170,6 +184,8 @@ export type PhoneMessage =
   | ListSessionsMessage
   | PingMessage
   | SyncSessionMessage
+  | DiffRequestMessage
+  | DiffHunksRequestMessage
   | SlashActionMessage;
 
 // ─── Bridge → Phone ──────────────────────────────────────────────────
@@ -211,6 +227,22 @@ export interface SessionSyncCompleteMessage {
   resolvedSessionId?: string;
 }
 
+export interface DiffContentMessage {
+  type: "diff_content";
+  sessionId: string;
+  eventId: number;
+  files: DiffFile[];
+}
+
+export interface DiffHunksContentMessage {
+  type: "diff_hunks_content";
+  sessionId: string;
+  eventId: number;
+  path: string;
+  hunks: DiffHunk[];
+  nextHunkIndex?: number;
+}
+
 export type BridgeMessage =
   | EventMessage
   | SessionListMessage
@@ -218,6 +250,8 @@ export type BridgeMessage =
   | PongMessage
   | ErrorResponseMessage
   | SessionSyncCompleteMessage
+  | DiffContentMessage
+  | DiffHunksContentMessage
   | SlashCatalogMessage
   | SlashActionResultMessage;
 

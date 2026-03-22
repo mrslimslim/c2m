@@ -47,6 +47,8 @@ node packages/bridge/dist/bin/codepilot.js --relay --dir /absolute/path/to/test-
 
 - Pairing succeeds from QR scan and from pasted or manually entered payloads.
 - The app can connect, show sessions, start a new session, continue a session, cancel a busy turn, and request a file.
+- Code change events open a dedicated diff viewer without inlining full patches into the session timeline.
+- Large diffs stay incrementally loaded: the first view shows only the initial hunk per file, and later hunks load on demand.
 - The slash menu reflects the bridge-provided catalog, including nested workflows, current/default config badges, and disabled reasons.
 - `/model` updates both `model` and `modelReasoningEffort`, and `/permissions` updates `approvalPolicy` and `sandboxMode`.
 - Diagnostics are useful and redact sensitive values such as `token`, `otp`, and ciphertext.
@@ -268,6 +270,77 @@ This is intentional behavior in the current self-use runtime model.
 - A loading chip appears first, then resolves into a file item.
 - The file viewer opens and shows the requested contents.
 - The file content belongs to the active project and active session, not a previously connected project.
+
+## Scenario 10A: View A Diff From A Code Change Event
+
+**Setup**
+
+- A connected project has a session containing at least one `code_change` event.
+- The changed turn should ideally include either:
+  - one file with multiple hunks
+  - or multiple changed files
+
+**Steps**
+
+1. Open the target session.
+2. Expand the code change card.
+3. Tap `View Diff`.
+4. Wait for the dedicated diff screen to load.
+5. Confirm the first hunk for each visible file renders.
+6. Tap `Load next hunk` for a file that has additional hunks.
+7. Tap `Open File` for one diff entry.
+
+**Expected**
+
+- The session timeline stays compact and does not inline the full patch.
+- The diff screen opens as a separate view.
+- The initial diff load renders only the first hunk for each file.
+- Additional hunks load incrementally when requested.
+- `Open File` still works as a fallback into the existing file viewer.
+
+**Failure clues**
+
+- If the diff screen opens but remains empty, check whether the corresponding `code_change` item has a replay event ID.
+- If scrolling the session detail screen becomes noticeably worse after this feature lands, treat it as a timeline regression and inspect whether diff text leaked into the timeline path.
+- If a file changed but shows no hunks, compare the current workspace state on the bridge with the original turn timing before treating it as an iOS rendering bug.
+
+## Scenario 10B: Diff Viewer Performance And Large Patch Behavior
+
+**Setup**
+
+- Use a session with a `code_change` event that includes a relatively large patch.
+- Prefer one example with:
+  - at least 3 changed files
+  - at least one file with 3 or more hunks
+  - enough changed lines to make scrolling meaningful
+
+**Steps**
+
+1. Open the session detail screen and scroll through the surrounding timeline before opening the diff.
+2. Confirm the code change card still looks like a compact summary rather than a giant inline patch.
+3. Tap `View Diff`.
+4. Measure the perceived time to first useful paint on the diff screen.
+5. Scroll from the summary card through the initially loaded files.
+6. Tap `Load next hunk` for one file, then keep scrolling.
+7. Tap `Load next hunk` again on the same file if available.
+8. Navigate back to the session detail screen.
+9. Scroll the session detail screen again.
+10. Re-open the same diff once more.
+
+**Expected**
+
+- Opening the diff does not cause a long blank screen before content appears.
+- The first render shows file summaries and first hunks without waiting for every hunk in the patch.
+- Loading the next hunk affects only that file section and does not visibly re-layout the whole page.
+- Returning to the session detail screen does not leave the timeline in a heavier or jankier state.
+- Re-opening the same diff should feel stable and should not duplicate file sections or hunks.
+
+**Failure clues**
+
+- If the session detail screen stutters before the diff is opened, check whether the timeline row started carrying full diff bodies.
+- If pressing `Load next hunk` causes the entire page to jump or freeze, inspect whether state updates are too coarse-grained for per-file pagination.
+- If re-opening the diff duplicates content, inspect whether the client appends initial hunks twice after a cached state restore.
+- If the first paint is slow only for very large patches, capture the changed file count and total hunk count alongside the repro.
 
 ## Scenario 11: Slash Workflow Acceptance
 

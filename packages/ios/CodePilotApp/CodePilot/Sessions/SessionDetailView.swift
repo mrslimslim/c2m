@@ -43,6 +43,7 @@ struct SessionDetailView: View {
                     } else {
                         ForEach(Array(timeline.enumerated()), id: \.offset) { index, item in
                             TimelineCellView(
+                                sessionID: sessionID,
                                 item: item,
                                 agentType: session?.agentType,
                                 previousItem: index > 0 ? timeline[index - 1] : nil,
@@ -639,6 +640,7 @@ struct SessionDetailView: View {
 // MARK: - Timeline Cell Router
 
 private struct TimelineCellView: View {
+    let sessionID: String
     let item: TimelineItem
     let agentType: AgentType?
     let previousItem: TimelineItem?
@@ -688,7 +690,7 @@ private struct TimelineCellView: View {
             ThinkingCell(text: text)
 
         case let .codeChange(changes):
-            CodeChangeCard(changes: changes)
+            CodeChangeCard(sessionID: sessionID, eventId: item.eventId, changes: changes)
 
         case let .commandExec(command, output, exitCode, status):
             CommandExecCard(command: command, output: output, exitCode: exitCode, status: status)
@@ -697,7 +699,11 @@ private struct TimelineCellView: View {
             TurnCompletedCard(summary: summary, filesChanged: filesChanged, usage: usage)
 
         case let .status(state, message):
-            StatusBanner(state: state, message: message)
+            if let toolEvent = TimelineToolEventParser.parse(statusMessage: message) {
+                ToolEventCard(presentation: toolEvent)
+            } else {
+                StatusBanner(state: state, message: message)
+            }
 
         case let .sessionError(message):
             ErrorBanner(message: message, isTransport: false)
@@ -789,17 +795,18 @@ private struct ThinkingCell: View {
 // MARK: - Code Change Card (compact, expandable)
 
 private struct CodeChangeCard: View {
+    let sessionID: String
+    let eventId: Int?
     let changes: [FileChange]
     @State private var isExpanded = false
 
     var body: some View {
-        Button {
-            withAnimation(.spring(duration: 0.25)) {
-                isExpanded.toggle()
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                // Summary line
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(duration: 0.25)) {
+                    isExpanded.toggle()
+                }
+            } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "doc.text.fill")
                         .font(.system(size: 10))
@@ -817,11 +824,13 @@ private struct CodeChangeCard: View {
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 10)
+            }
+            .buttonStyle(.plain)
 
-                // Expanded file list
-                if isExpanded {
-                    Divider().opacity(0.3)
+            if isExpanded {
+                Divider().opacity(0.3)
 
+                VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(changes.enumerated()), id: \.offset) { _, change in
                             HStack(spacing: 6) {
@@ -841,12 +850,28 @@ private struct CodeChangeCard: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+
+                    if let eventId {
+                        NavigationLink {
+                            DiffViewerView(sessionID: sessionID, eventId: eventId, changes: changes)
+                        } label: {
+                            Text("View Diff")
+                                .font(.caption.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(CPTheme.accent)
+                    } else {
+                        Text("Diff unavailable for legacy timeline events")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             }
-            .background(Color(.systemGray6).opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .background(Color(.systemGray6).opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .buttonStyle(.plain)
     }
 }
@@ -859,6 +884,15 @@ private struct CommandExecCard: View {
     let exitCode: Int?
     let status: CommandExecStatus
     @State private var isExpanded = false
+
+    private var hasOutput: Bool {
+        guard let output else { return false }
+        return !output.isEmpty
+    }
+
+    private var canExpand: Bool {
+        hasOutput || exitCode != nil || command.count > 72 || command.contains("\n")
+    }
 
     private var statusColor: Color {
         switch status {
@@ -880,32 +914,42 @@ private struct CommandExecCard: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header (always visible)
             Button {
-                if output != nil && !output!.isEmpty {
+                if canExpand {
                     withAnimation(.spring(duration: 0.25)) {
                         isExpanded.toggle()
                     }
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
                     Text("$")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(CPTheme.terminalPrompt)
+                        .padding(.top, 1)
 
                     Text(command)
                         .font(.system(.caption, design: .monospaced).weight(.medium))
                         .foregroundStyle(CPTheme.terminalText)
-                        .lineLimit(1)
+                        .lineLimit(isExpanded ? nil : 3)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    Spacer()
+                    Spacer(minLength: 8)
 
-                    if status == .running {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(CPTheme.warning)
-                    } else {
-                        Image(systemName: statusIcon)
-                            .font(.system(size: 11))
-                            .foregroundStyle(statusColor)
+                    HStack(spacing: 8) {
+                        if status == .running {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(CPTheme.warning)
+                        } else {
+                            Image(systemName: statusIcon)
+                                .font(.system(size: 11))
+                                .foregroundStyle(statusColor)
+                        }
+
+                        if canExpand {
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.quaternary)
+                        }
                     }
                 }
             }
@@ -913,19 +957,28 @@ private struct CommandExecCard: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
 
-            // Output (collapsed by default)
-            if isExpanded, let output = output, !output.isEmpty {
+            if isExpanded, (hasOutput || exitCode != nil) {
                 Rectangle()
                     .fill(Color.white.opacity(0.06))
                     .frame(height: 1)
 
-                Text(output)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.7))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .lineLimit(30)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let output, !output.isEmpty {
+                        Text(output)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.7))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(30)
+                    }
+
+                    if let exitCode {
+                        Text("exit code \(exitCode)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                    }
+                }
+                .padding(10)
             }
         }
         .background(CPTheme.terminalBg, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -970,6 +1023,165 @@ private struct TurnCompletedCard: View {
             return String(format: "%.1fk", Double(count) / 1000.0)
         }
         return "\(count)"
+    }
+}
+
+// MARK: - Tool Event Card
+
+private struct ToolEventCard: View {
+    let presentation: TimelineToolEventPresentation
+    @State private var isExpanded = false
+
+    private var canExpand: Bool {
+        !presentation.detail.isEmpty && presentation.detail != presentation.summary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if canExpand {
+                    withAnimation(.spring(duration: 0.25)) {
+                        isExpanded.toggle()
+                    }
+                }
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CPTheme.info)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(presentation.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        Text(presentation.summary)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(isExpanded ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if let subtitle = presentation.subtitle {
+                            Text(subtitle)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if canExpand {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+
+            if !presentation.todoItems.isEmpty {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(presentation.todoItems.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: item.isCompleted ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(item.isCompleted ? CPTheme.success : Color(.tertiaryLabel))
+                                .padding(.top, 2)
+
+                            Text(item.text)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .strikethrough(item.isCompleted, color: CPTheme.success.opacity(0.7))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            }
+
+            if !presentation.searchQueries.isEmpty {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Queries")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+
+                    ForEach(Array(presentation.searchQueries.enumerated()), id: \.offset) { _, query in
+                        Text(query)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(CPTheme.info.opacity(0.10), in: Capsule())
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            }
+
+            if !presentation.metadataRows.isEmpty {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Details")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+
+                    ForEach(Array(presentation.metadataRows.enumerated()), id: \.offset) { _, row in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(row.label)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                            Spacer(minLength: 8)
+
+                            Text(row.value)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 10)
+            }
+
+            if isExpanded {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+
+                Text(presentation.detail)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            }
+        }
+        .background(Color(.systemGray6).opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(CPTheme.divider.opacity(0.45), lineWidth: 0.5)
+        )
     }
 }
 

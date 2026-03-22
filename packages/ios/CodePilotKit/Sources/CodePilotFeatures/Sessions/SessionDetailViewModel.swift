@@ -7,6 +7,7 @@ public final class SessionDetailViewModel {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let diffStore: DiffStore
     private let sessionIdOverride: String?
     private var detachedDraft: String = ""
 
@@ -15,12 +16,14 @@ public final class SessionDetailViewModel {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        diffStore: DiffStore = DiffStore(),
         sessionId: String? = nil
     ) {
         self.sender = sender
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.diffStore = diffStore
         self.sessionIdOverride = sessionId
     }
 
@@ -107,6 +110,55 @@ public final class SessionDetailViewModel {
             return nil
         }
         return fileStore.fileState(for: path, sessionId: currentSessionId)
+    }
+
+    public func requestDiff(eventId: Int) throws {
+        guard let currentSessionId else {
+            return
+        }
+        diffStore.markRequested(sessionId: currentSessionId, eventId: eventId)
+        do {
+            try sender.send(.diffRequest(sessionId: currentSessionId, eventId: eventId))
+        } catch {
+            diffStore.markRequestFailed(
+                sessionId: currentSessionId,
+                eventId: eventId,
+                message: "Failed to load diff."
+            )
+            throw error
+        }
+    }
+
+    public func requestMoreDiffHunks(eventId: Int, path: String, afterHunkIndex: Int) throws {
+        guard let currentSessionId else {
+            return
+        }
+        diffStore.markLoadingMore(sessionId: currentSessionId, eventId: eventId, path: path)
+        do {
+            try sender.send(
+                .diffHunksRequest(
+                    sessionId: currentSessionId,
+                    eventId: eventId,
+                    path: path,
+                    afterHunkIndex: afterHunkIndex
+                )
+            )
+        } catch {
+            diffStore.markLoadingMoreFailed(
+                sessionId: currentSessionId,
+                eventId: eventId,
+                path: path,
+                message: "Failed to load additional hunks."
+            )
+            throw error
+        }
+    }
+
+    public func diffState(for eventId: Int) -> DiffState? {
+        guard let currentSessionId else {
+            return nil
+        }
+        return diffStore.state(for: currentSessionId, eventId: eventId)
     }
 
     private var currentSessionId: String? {

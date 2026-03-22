@@ -18,6 +18,14 @@ final class SessionCopyInteractionSourceTests: XCTestCase {
             source.contains("Label(\"Copy Conversation\", systemImage: \"doc.on.doc\")"),
             "The toolbar should advertise a dedicated copy-conversation affordance."
         )
+        XCTAssertTrue(
+            source.contains("Image(systemName: \"trash\")"),
+            "The session detail toolbar should keep the delete-session affordance available."
+        )
+        XCTAssertFalse(
+            source.contains("Image(systemName: \"doc.badge.plus\")"),
+            "The session detail toolbar should no longer expose the add-file affordance."
+        )
     }
 
     func testSessionDetailSourceAddsLongPressCopyMenuToTimelineCells() throws {
@@ -36,6 +44,21 @@ final class SessionCopyInteractionSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("Label(copyPayload.title, systemImage: \"doc.on.doc\")"),
             "The long-press menu should present a clear copy action for the current timeline item."
+        )
+    }
+
+    func testSessionDetailSourceNavigatesCodeChangesIntoDedicatedDiffViewer() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("DiffViewerView("),
+            "Code change entries should navigate into a dedicated diff viewer screen instead of rendering full patches inline."
+        )
+        XCTAssertTrue(
+            source.contains("View Diff"),
+            "The session detail source should expose an explicit View Diff affordance for code changes."
         )
     }
 

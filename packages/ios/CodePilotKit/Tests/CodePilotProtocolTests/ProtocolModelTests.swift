@@ -88,6 +88,21 @@ final class ProtocolModelTests: XCTestCase {
         )
         try assertRoundTrip(
             PhoneMessage.self,
+            json: #"{"type":"diff_req","sessionId":"session-1","eventId":42}"#,
+            expected: .diffRequest(sessionId: "session-1", eventId: 42)
+        )
+        try assertRoundTrip(
+            PhoneMessage.self,
+            json: #"{"type":"diff_hunks_req","sessionId":"session-1","eventId":42,"path":"Sources/App.swift","afterHunkIndex":1}"#,
+            expected: .diffHunksRequest(
+                sessionId: "session-1",
+                eventId: 42,
+                path: "Sources/App.swift",
+                afterHunkIndex: 1
+            )
+        )
+        try assertRoundTrip(
+            PhoneMessage.self,
             json: #"{"type":"slash_action","sessionId":"session-1","commandId":"review","arguments":{"depth":"full","apply":false,"count":2}}"#,
             expected: .slashAction(
                 .init(
@@ -147,6 +162,55 @@ final class ProtocolModelTests: XCTestCase {
             BridgeMessage.self,
             json: #"{"type":"file_content","path":"README.md","content":"hi","language":"markdown"}"#,
             expected: .fileContent(path: "README.md", content: "hi", language: "markdown")
+        )
+        let firstHunk = DiffHunk(
+            oldStart: 10,
+            oldLineCount: 2,
+            newStart: 10,
+            newLineCount: 3,
+            lines: [
+                .init(kind: .context, text: " let value = 1"),
+                .init(kind: .delete, text: "-let oldValue = 2"),
+                .init(kind: .add, text: "+let oldValue = 3"),
+            ]
+        )
+        let file = DiffFile(
+            path: "Sources/App.swift",
+            kind: .update,
+            addedLines: 1,
+            deletedLines: 1,
+            isTruncated: false,
+            truncationReason: nil,
+            totalHunkCount: 3,
+            loadedHunks: [firstHunk],
+            nextHunkIndex: 1
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"diff_content","sessionId":"session-1","eventId":42,"files":[{"path":"Sources/App.swift","kind":"update","addedLines":1,"deletedLines":1,"isTruncated":false,"totalHunkCount":3,"loadedHunks":[{"oldStart":10,"oldLineCount":2,"newStart":10,"newLineCount":3,"lines":[{"kind":"context","text":" let value = 1"},{"kind":"delete","text":"-let oldValue = 2"},{"kind":"add","text":"+let oldValue = 3"}]}],"nextHunkIndex":1}]}"#,
+            expected: .diffContent(sessionId: "session-1", eventId: 42, files: [file])
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"diff_hunks_content","sessionId":"session-1","eventId":42,"path":"Sources/App.swift","hunks":[{"oldStart":18,"oldLineCount":1,"newStart":19,"newLineCount":2,"lines":[{"kind":"context","text":" func run() {"},{"kind":"add","text":"+    print(value)"}]}],"nextHunkIndex":2}"#,
+            expected: .diffHunksContent(
+                sessionId: "session-1",
+                eventId: 42,
+                path: "Sources/App.swift",
+                hunks: [
+                    .init(
+                        oldStart: 18,
+                        oldLineCount: 1,
+                        newStart: 19,
+                        newLineCount: 2,
+                        lines: [
+                            .init(kind: .context, text: " func run() {"),
+                            .init(kind: .add, text: "+    print(value)"),
+                        ]
+                    ),
+                ],
+                nextHunkIndex: 2
+            )
         )
         try assertRoundTrip(
             BridgeMessage.self,

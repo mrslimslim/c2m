@@ -7,6 +7,7 @@ public final class SessionMessageRouter {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let diffStore: DiffStore
     private let diagnostics: DiagnosticsStore
     private let slashCatalogStore: SlashCatalogStore?
     private let connectionID: String?
@@ -15,6 +16,7 @@ public final class SessionMessageRouter {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        diffStore: DiffStore = DiffStore(),
         diagnostics: DiagnosticsStore,
         slashCatalogStore: SlashCatalogStore? = nil,
         connectionID: String? = nil
@@ -22,6 +24,7 @@ public final class SessionMessageRouter {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.diffStore = diffStore
         self.diagnostics = diagnostics
         self.slashCatalogStore = slashCatalogStore
         self.connectionID = connectionID
@@ -34,6 +37,7 @@ public final class SessionMessageRouter {
             for remap in remaps {
                 timelineStore.migrateSessionTimeline(from: remap.from, to: remap.to)
                 fileStore.migrateSessionState(from: remap.from, to: remap.to)
+                diffStore.migrateSessionState(from: remap.from, to: remap.to)
                 diagnostics.recordInfo("session_remap:\(remap.from)->\(remap.to)")
             }
             diagnostics.recordInfo("session_list:\(sessions.count)")
@@ -41,7 +45,12 @@ public final class SessionMessageRouter {
         case let .event(sessionId, event, eventId, timestamp):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             if eventId <= 0 {
-                timelineStore.appendBridgeEvent(sessionId: targetSessionId, event: event, timestamp: timestamp)
+                timelineStore.appendBridgeEvent(
+                    sessionId: targetSessionId,
+                    event: event,
+                    timestamp: timestamp,
+                    eventId: nil
+                )
                 applySessionState(event: event, sessionId: targetSessionId)
                 diagnostics.recordInfo("legacy_event:\(targetSessionId):\(eventLabel(event))")
                 return
@@ -56,7 +65,12 @@ public final class SessionMessageRouter {
                 onReplayNeeded?(targetSessionId, lastAppliedEventId)
                 return
             }
-            timelineStore.appendBridgeEvent(sessionId: targetSessionId, event: event, timestamp: timestamp)
+            timelineStore.appendBridgeEvent(
+                sessionId: targetSessionId,
+                event: event,
+                timestamp: timestamp,
+                eventId: eventId
+            )
             applySessionState(event: event, sessionId: targetSessionId)
             sessionStore.recordAppliedEventID(eventId, for: targetSessionId)
             diagnostics.recordInfo("event:\(targetSessionId):\(eventLabel(event))")
@@ -69,6 +83,22 @@ public final class SessionMessageRouter {
                 fallbackSessionId: sessionStore.activeSessionId
             )
             diagnostics.recordInfo("file_content:\(path)")
+
+        case let .diffContent(sessionId, eventId, files):
+            let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            diffStore.routeDiffContent(sessionId: targetSessionId, eventId: eventId, files: files)
+            diagnostics.recordInfo("diff_content:\(sessionId):\(eventId):\(files.count)")
+
+        case let .diffHunksContent(sessionId, eventId, path, hunks, nextHunkIndex):
+            let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            diffStore.routeDiffHunksContent(
+                sessionId: targetSessionId,
+                eventId: eventId,
+                path: path,
+                hunks: hunks,
+                nextHunkIndex: nextHunkIndex
+            )
+            diagnostics.recordInfo("diff_hunks_content:\(sessionId):\(eventId):\(path):\(hunks.count)")
 
         case let .pong(latencyMs):
             diagnostics.recordInfo("pong:\(latencyMs)ms")
@@ -83,6 +113,7 @@ public final class SessionMessageRouter {
                 let remap = sessionStore.applySessionRemap(from: sessionId, to: resolvedSessionId)
                 timelineStore.migrateSessionTimeline(from: remap.from, to: remap.to)
                 fileStore.migrateSessionState(from: remap.from, to: remap.to)
+                diffStore.migrateSessionState(from: remap.from, to: remap.to)
                 diagnostics.recordInfo("session_sync_remap:\(remap.from)->\(remap.to)")
             }
             sessionStore.recordAppliedEventID(latestEventId, for: targetSessionId)

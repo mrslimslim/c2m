@@ -176,3 +176,44 @@ test("CodexAdapter uses CLI bypass mode for true Full Access permissions", () =>
     true,
   );
 });
+
+test("CodexAdapter forwards full tool payloads without slicing status messages", () => {
+  const { adapter } = makeAdapterWithCapturedStartOptions();
+  const captured: any[] = [];
+  const item = {
+    type: "todo_list",
+    id: "item_1",
+    items: [
+      {
+        text: "确认本地可用的运行/验证工具并制定最小实现结构".repeat(8),
+        completed: true,
+      },
+      {
+        text: "先写一个最小失败验证，再实现贪吃蛇页面",
+        completed: true,
+      },
+    ],
+  };
+
+  (adapter as any).mapItemEvent(
+    item,
+    (event: any) => captured.push(event),
+    {
+      info: {
+        id: "session-1",
+        agentType: "codex",
+        workDir: "/tmp/non-git-dir",
+        state: "thinking",
+        createdAt: Date.now(),
+        lastActiveAt: Date.now(),
+      },
+    },
+  );
+
+  assert.equal(captured.length, 1);
+  assert.deepEqual(captured[0], {
+    type: "status",
+    state: "thinking",
+    message: `[todo_list] ${JSON.stringify(item)}`,
+  });
+});

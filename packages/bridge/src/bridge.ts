@@ -26,6 +26,7 @@ import { LocalTransport } from "./transport/local.js";
 import { displayQRCode } from "./pairing/qrcode.js";
 import { loadOrCreatePairingMaterial } from "./pairing/state.js";
 import { SessionEventLogStore, type PersistedSessionEvent } from "./session-store/event-log.js";
+import { DiffService } from "./diff/service.js";
 import { dispatchSlashAction } from "./slash/actions.js";
 import { buildSlashCatalog } from "./slash/catalog.js";
 import { detectAdapterVersion } from "./slash/version.js";
@@ -79,6 +80,7 @@ export class Bridge {
   private readonly connectedClients = new Map<string, TransportClient>();
   private readonly replayStates = new Map<string, ReplayState>();
   private readonly sessionEventStore: SessionEventLogStore;
+  private readonly diffService: DiffService;
   private readonly deliveryQueueBySession = new Map<string, Promise<void>>();
   private adapterVersion?: string;
   private slashCatalog: SlashCatalogMessage | null = null;
@@ -89,6 +91,10 @@ export class Bridge {
     this.transport = null as unknown as TransportServer;
     this.sessionEventStore = new SessionEventLogStore({
       workDir: this.options.workDir,
+    });
+    this.diffService = new DiffService({
+      workDir: this.options.workDir,
+      eventStore: this.sessionEventStore,
     });
   }
 
@@ -234,6 +240,25 @@ export class Bridge {
 
       case "sync_session":
         await this.handleSyncSession(client, message.sessionId, message.afterEventId);
+        break;
+
+      case "diff_req":
+        client.send({
+          type: "diff_content",
+          ...(await this.diffService.loadDiff(message.sessionId, message.eventId)),
+        });
+        break;
+
+      case "diff_hunks_req":
+        client.send({
+          type: "diff_hunks_content",
+          ...(await this.diffService.loadMoreHunks(
+            message.sessionId,
+            message.eventId,
+            message.path,
+            message.afterHunkIndex,
+          )),
+        });
         break;
 
       case "slash_action":

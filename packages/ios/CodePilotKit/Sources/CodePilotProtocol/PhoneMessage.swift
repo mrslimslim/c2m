@@ -76,6 +76,8 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
     case listSessions
     case ping(ts: Int)
     case syncSession(sessionId: String, afterEventId: Int)
+    case diffRequest(sessionId: String, eventId: Int)
+    case diffHunksRequest(sessionId: String, eventId: Int, path: String, afterHunkIndex: Int)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -85,6 +87,8 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case ts
         case config
         case afterEventId
+        case eventId
+        case afterHunkIndex
         case commandId
         case arguments
     }
@@ -98,6 +102,8 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case listSessions = "list_sessions"
         case ping
         case syncSession = "sync_session"
+        case diffRequest = "diff_req"
+        case diffHunksRequest = "diff_hunks_req"
     }
 
     public init(from decoder: Decoder) throws {
@@ -137,6 +143,18 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 afterEventId: try container.decode(Int.self, forKey: .afterEventId)
             )
+        case .diffRequest:
+            self = .diffRequest(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                eventId: try container.decode(Int.self, forKey: .eventId)
+            )
+        case .diffHunksRequest:
+            self = .diffHunksRequest(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                eventId: try container.decode(Int.self, forKey: .eventId),
+                path: try container.decode(String.self, forKey: .path),
+                afterHunkIndex: try container.decode(Int.self, forKey: .afterHunkIndex)
+            )
         }
     }
 
@@ -175,6 +193,16 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.syncSession, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
             try container.encode(afterEventId, forKey: .afterEventId)
+        case let .diffRequest(sessionId, eventId):
+            try container.encode(MessageType.diffRequest, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(eventId, forKey: .eventId)
+        case let .diffHunksRequest(sessionId, eventId, path, afterHunkIndex):
+            try container.encode(MessageType.diffHunksRequest, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(eventId, forKey: .eventId)
+            try container.encode(path, forKey: .path)
+            try container.encode(afterHunkIndex, forKey: .afterHunkIndex)
         }
     }
 }

@@ -238,7 +238,7 @@ export class CodexAdapter implements AgentAdapter {
         onEvent({
           type: "status",
           state: session.info.state,
-          message: `[${itemType}] ${JSON.stringify(item).slice(0, 200)}`,
+          message: `[${itemType}] ${JSON.stringify(item)}`,
         });
     }
   }

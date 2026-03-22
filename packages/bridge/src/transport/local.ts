@@ -40,6 +40,8 @@ const VALID_MESSAGE_TYPES = new Set([
   "list_sessions",
   "ping",
   "sync_session",
+  "diff_req",
+  "diff_hunks_req",
   "slash_action",
 ]);
 
@@ -82,6 +84,18 @@ export function validatePhoneMessage(data: unknown): PhoneMessage | null {
     case "sync_session":
       if (typeof msg.sessionId !== "string") return null;
       if (typeof msg.afterEventId !== "number") return null;
+      return msg as unknown as PhoneMessage;
+
+    case "diff_req":
+      if (typeof msg.sessionId !== "string") return null;
+      if (typeof msg.eventId !== "number") return null;
+      return msg as unknown as PhoneMessage;
+
+    case "diff_hunks_req":
+      if (typeof msg.sessionId !== "string") return null;
+      if (typeof msg.eventId !== "number") return null;
+      if (typeof msg.path !== "string") return null;
+      if (typeof msg.afterHunkIndex !== "number") return null;
       return msg as unknown as PhoneMessage;
 
     case "slash_action":

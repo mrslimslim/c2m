@@ -90,6 +90,104 @@ final class SessionRoutingTests: XCTestCase {
         )
     }
 
+    func testCodeChangeTimelineItemPreservesBridgeEventID() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(
+            .event(
+                sessionId: session.id,
+                event: .codeChange(changes: [.init(path: "Sources/App.swift", kind: .update)]),
+                eventId: 1,
+                timestamp: 10
+            )
+        )
+
+        XCTAssertEqual(timelineStore.timeline(for: session.id).first?.eventId, 1)
+    }
+
+    func testDiffRoutingStoresInitialDiffAndAppendsLaterHunks() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diffStore = DiffStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore,
+            diagnostics: diagnostics
+        )
+
+        router.handle(
+            .diffContent(
+                sessionId: "session-1",
+                eventId: 42,
+                files: [
+                    .init(
+                        path: "Sources/App.swift",
+                        kind: .update,
+                        addedLines: 2,
+                        deletedLines: 1,
+                        isTruncated: false,
+                        totalHunkCount: 2,
+                        loadedHunks: [
+                            .init(
+                                oldStart: 1,
+                                oldLineCount: 1,
+                                newStart: 1,
+                                newLineCount: 2,
+                                lines: [
+                                    .init(kind: .delete, text: "-let value = 1"),
+                                    .init(kind: .add, text: "+let value = 2"),
+                                ]
+                            )
+                        ],
+                        nextHunkIndex: 1
+                    )
+                ]
+            )
+        )
+
+        XCTAssertEqual(diffStore.state(for: "session-1", eventId: 42)?.files.first?.loadedHunks.count, 1)
+        XCTAssertEqual(diffStore.state(for: "session-1", eventId: 42)?.files.first?.nextHunkIndex, 1)
+
+        router.handle(
+            .diffHunksContent(
+                sessionId: "session-1",
+                eventId: 42,
+                path: "Sources/App.swift",
+                hunks: [
+                    .init(
+                        oldStart: 9,
+                        oldLineCount: 1,
+                        newStart: 10,
+                        newLineCount: 2,
+                        lines: [
+                            .init(kind: .context, text: " func run() {}"),
+                            .init(kind: .add, text: "+print(value)"),
+                        ]
+                    )
+                ],
+                nextHunkIndex: nil
+            )
+        )
+
+        XCTAssertEqual(diffStore.state(for: "session-1", eventId: 42)?.files.first?.loadedHunks.count, 2)
+        XCTAssertNil(diffStore.state(for: "session-1", eventId: 42)?.files.first?.nextHunkIndex)
+    }
+
     func testSessionSyncCompleteResolvedSessionIDMigratesReplayState() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()

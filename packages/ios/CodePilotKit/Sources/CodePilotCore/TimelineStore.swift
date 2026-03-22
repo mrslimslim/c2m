@@ -51,21 +51,21 @@ public final class TimelineStore {
         )
     }
 
-    public func appendBridgeEvent(sessionId: String, event: AgentEvent, timestamp: Int) {
+    public func appendBridgeEvent(sessionId: String, event: AgentEvent, timestamp: Int, eventId: Int? = nil) {
         switch event {
         case let .status(state, message):
             appendSessionItem(
-                .init(timestamp: timestamp, kind: .status(state: state, message: message)),
+                .init(eventId: eventId, timestamp: timestamp, kind: .status(state: state, message: message)),
                 sessionId: sessionId
             )
         case let .thinking(text):
             appendSessionItem(
-                .init(timestamp: timestamp, kind: .thinking(text: text)),
+                .init(eventId: eventId, timestamp: timestamp, kind: .thinking(text: text)),
                 sessionId: sessionId
             )
         case let .codeChange(changes):
             appendSessionItem(
-                .init(timestamp: timestamp, kind: .codeChange(changes: changes)),
+                .init(eventId: eventId, timestamp: timestamp, kind: .codeChange(changes: changes)),
                 sessionId: sessionId
             )
         case let .commandExec(command, output, exitCode, status):
@@ -75,21 +75,23 @@ public final class TimelineStore {
                 output: output,
                 exitCode: exitCode,
                 status: status,
-                timestamp: timestamp
+                timestamp: timestamp,
+                eventId: eventId
             )
         case let .agentMessage(text):
             appendSessionItem(
-                .init(timestamp: timestamp, kind: .agentMessage(text: text)),
+                .init(eventId: eventId, timestamp: timestamp, kind: .agentMessage(text: text)),
                 sessionId: sessionId
             )
         case let .error(message):
             appendSessionItem(
-                .init(timestamp: timestamp, kind: .sessionError(message: message)),
+                .init(eventId: eventId, timestamp: timestamp, kind: .sessionError(message: message)),
                 sessionId: sessionId
             )
         case let .turnCompleted(summary, filesChanged, usage):
             appendSessionItem(
                 .init(
+                    eventId: eventId,
                     timestamp: timestamp,
                     kind: .turnCompleted(summary: summary, filesChanged: filesChanged, usage: usage)
                 ),
@@ -163,7 +165,8 @@ public final class TimelineStore {
         output: String?,
         exitCode: Int?,
         status: CommandExecStatus,
-        timestamp: Int
+        timestamp: Int,
+        eventId: Int?
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -180,6 +183,7 @@ public final class TimelineStore {
         }) {
             let previousPayload = commandExecPayload(from: items[existingIndex].kind)
             items[existingIndex] = .init(
+                eventId: eventId ?? items[existingIndex].eventId,
                 timestamp: items[existingIndex].timestamp,
                 kind: .commandExec(
                     command: command,
@@ -191,6 +195,7 @@ public final class TimelineStore {
         } else {
             insertSessionItem(
                 .init(
+                    eventId: eventId,
                     timestamp: timestamp,
                     kind: .commandExec(command: command, output: output, exitCode: exitCode, status: status)
                 ),

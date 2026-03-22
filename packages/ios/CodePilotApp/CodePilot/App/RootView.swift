@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let diffStore: DiffStore
     private let diagnosticsStore: DiagnosticsStore
     private let slashCatalogStore: SlashCatalogStore
     private let diagnosticsViewModel: DiagnosticsViewModel
@@ -84,6 +85,7 @@ final class AppModel: ObservableObject {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
+        let diffStore = DiffStore()
         let diagnosticsStore = DiagnosticsStore()
         let slashCatalogStore = SlashCatalogStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
@@ -116,6 +118,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            diffStore: diffStore,
             diagnosticsStore: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
             diagnosticsViewModel: diagnosticsViewModel,
@@ -155,6 +158,7 @@ final class AppModel: ObservableObject {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        diffStore: DiffStore,
         diagnosticsStore: DiagnosticsStore,
         slashCatalogStore: SlashCatalogStore,
         diagnosticsViewModel: DiagnosticsViewModel,
@@ -172,6 +176,7 @@ final class AppModel: ObservableObject {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.diffStore = diffStore
         self.diagnosticsStore = diagnosticsStore
         self.slashCatalogStore = slashCatalogStore
         self.diagnosticsViewModel = diagnosticsViewModel
@@ -244,6 +249,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            diffStore: diffStore,
             diagnostics: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
             connectionID: id
@@ -501,6 +507,11 @@ final class AppModel: ObservableObject {
         return fileStore.files(for: resolvedSessionID)
     }
 
+    func fileState(for sessionID: String, path: String) -> FileState? {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return fileStore.fileState(for: path, sessionId: resolvedSessionID)
+    }
+
     func makeSessionDetailViewModel(sessionID: String) -> SessionDetailViewModel {
         let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
         // Find the controller for this session's connection
@@ -521,8 +532,14 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            diffStore: diffStore,
             sessionId: resolvedSessionID
         )
+    }
+
+    func diffState(for sessionID: String, eventID: Int) -> DiffState? {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return diffStore.state(for: resolvedSessionID, eventId: eventID)
     }
 
     func deleteSession(id: String) throws {
@@ -734,7 +751,7 @@ final class AppModel: ObservableObject {
         case let .error(message):
             handleReplayProtocolErrorIfNeeded(slotID: slotID, message: message)
 
-        case .fileContent, .pong, .slashCatalog, .slashActionResult:
+        case .fileContent, .diffContent, .diffHunksContent, .pong, .slashCatalog, .slashActionResult:
             break
         }
 
@@ -1095,6 +1112,7 @@ extension AppModel {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
+        let diffStore = DiffStore()
         let diagnosticsStore = DiagnosticsStore()
         let slashCatalogStore = SlashCatalogStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
@@ -1118,6 +1136,7 @@ extension AppModel {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            diffStore: diffStore,
             diagnosticsStore: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
             diagnosticsViewModel: diagnosticsViewModel,

@@ -113,6 +113,25 @@ final class SessionComposerLayoutSourceTests: XCTestCase {
         )
     }
 
+    func testDiffViewerSourceUsesLazySectionsAndIncrementalHunkActions() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Files/DiffViewerView.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("LazyVStack"),
+            "The diff viewer should use lazy vertical layout so large multi-file diffs do not mount every row at once."
+        )
+        XCTAssertTrue(
+            source.contains("Load next hunk"),
+            "The diff viewer should expose incremental hunk loading rather than rendering the full patch immediately."
+        )
+        XCTAssertTrue(
+            source.contains("Open File"),
+            "The diff viewer should keep a fallback action for opening the current file contents."
+        )
+    }
+
     private func loadAppSource(at relativePath: String) throws -> String {
         let testsDirectory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
