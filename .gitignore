@@ -2,6 +2,7 @@ node_modules/
 .worktrees/
 dist/
 *.tsbuildinfo
+target/
 .DS_Store
 .env
 .env.local

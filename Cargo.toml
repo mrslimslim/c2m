@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/codepilot-protocol"]
+resolver = "2"
+
