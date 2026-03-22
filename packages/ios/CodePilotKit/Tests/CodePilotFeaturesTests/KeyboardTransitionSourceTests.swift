@@ -1,7 +1,7 @@
 import XCTest
 
 final class KeyboardTransitionSourceTests: XCTestCase {
-    func testSessionDetailViewDismissesKeyboardBeforePresentingDeletionAndFileRequestFlows() throws {
+    func testSessionDetailViewDismissesKeyboardBeforePresentingDeletionFlowAndRemovesFileRequestSheet() throws {
         let source = try loadAppSource(
             at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
         )
@@ -12,11 +12,6 @@ final class KeyboardTransitionSourceTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            source.contains("prepareForModalTransition {") && source.contains("showFileRequest = true"),
-            "Session detail should clear active text input before presenting the file request sheet."
-        )
-
-        XCTAssertTrue(
             source.contains("private func deleteSession()") && source.contains("prepareForModalTransition()"),
             "Session deletion should clear the keyboard session before dismissing the screen."
         )
@@ -24,9 +19,17 @@ final class KeyboardTransitionSourceTests: XCTestCase {
             source.contains("DispatchQueue.main.async {") && source.contains("dismiss()"),
             "Session deletion should defer the view dismissal until after the keyboard has been asked to resign."
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
+            source.contains("showFileRequest = true"),
+            "Session detail should no longer expose the file request presentation flow from this screen."
+        )
+        XCTAssertFalse(
             source.contains("@FocusState private var isFileRequestFocused: Bool"),
-            "The file request sheet should manage its own text-field focus."
+            "Session detail should no longer keep a dedicated focus state for a removed file request sheet."
+        )
+        XCTAssertFalse(
+            source.contains("private var fileRequestSheet: some View"),
+            "Session detail should not keep the file request sheet implementation once the toolbar action is removed."
         )
         XCTAssertTrue(
             source.contains("private func resignActiveTextInput()"),

@@ -36,11 +36,7 @@ export interface BridgeOptions {
   agent: "codex" | "claude" | "auto";
   port: number;
   host?: string;
-  advertisedHost?: string;
   workDir: string;
-  tunnel?: boolean;
-  relay?: boolean;
-  relayUrl?: string;
 }
 
 /** Sensitive file patterns that should never be served */
@@ -104,21 +100,11 @@ export class Bridge {
     });
     log.info(`Pairing state: ${pairingMaterial.statePath}`);
 
-    // 0. If relay mode, create RelayTransport
-    if (this.options.relay) {
-      const { RelayTransport } = await import("./transport/relay.js");
-      this.transport = new RelayTransport(
-        this.options.relayUrl ?? "wss://relay.codepilot.dev",
-        { pairingMaterial },
-      );
-    } else {
-      this.transport = new LocalTransport(
-        this.options.port,
-        this.options.host ?? "0.0.0.0",
-        this.options.advertisedHost,
-        pairingMaterial,
-      );
-    }
+    this.transport = new LocalTransport(
+      this.options.port,
+      this.options.host ?? "127.0.0.1",
+      pairingMaterial,
+    );
 
     // 1. Resolve adapter
     this.adapter = await this.resolveAdapter();
@@ -126,41 +112,27 @@ export class Bridge {
     log.success(`Agent: ${this.adapter.name}`);
 
     // 2. Start transport (interface-only, no cast)
-    const { url, httpUrl, pairingData, listenUrl } = await this.transport.start();
-    log.success(`WebSocket server listening on ${listenUrl ?? url}`);
+    const { pairingData, listenUrl } = await this.transport.start();
+    log.success(`WebSocket server listening on ${listenUrl}`);
 
     // 3. Display QR code
-    if (this.options.tunnel) {
-      // Launch Cloudflare Tunnel and use tunnel URL in QR code
-      log.info("Starting Cloudflare Tunnel...");
-      const { startTunnel } = await import("./utils/tunnel.js");
-      const tunnel = await startTunnel(this.resolveLocalListenPort(pairingData));
-      this.tunnelStop = tunnel.stop;
-      log.success(`Tunnel URL: ${tunnel.url}`);
+    log.info("Starting Cloudflare Tunnel...");
+    const { startTunnel } = await import("./utils/tunnel.js");
+    const tunnel = await startTunnel(this.resolveLocalListenPort(pairingData));
+    this.tunnelStop = tunnel.stop;
+    log.success(`Tunnel URL: ${tunnel.url}`);
 
-      // Override pairing data with tunnel info
-      // Extract just the hostname from the tunnel URL for the host field
-      const tunnelHostname = tunnel.url.replace("https://", "");
-      const tunnelPairingData = {
-        ...pairingData,
-        host: tunnelHostname,
-        port: 443,
-        tunnel: true,         // signal to the phone to use wss://
-      };
-      log.info("Scan this QR code with your phone to connect:");
-      displayQRCode(tunnelPairingData);
-      log.info(`Or connect manually: ${tunnel.wsUrl}`);
-    } else {
-      log.info("Scan this QR code with your phone to connect:");
-      displayQRCode(pairingData);
-      log.info(`Or connect manually: ${url}`);
-      if (pairingData.token) {
-        log.info(`Token: ${pairingData.token}`);
-      }
-      if (httpUrl && pairingData.host) {
-        log.info(`Open test client: ${httpUrl}?host=${pairingData.host}&port=${pairingData.port}&token=${pairingData.token ?? ""}&bridge_pubkey=${encodeURIComponent(String(pairingData.bridge_pubkey ?? ""))}&otp=${pairingData.otp ?? ""}`);
-      }
-    }
+    // Override pairing data with tunnel info
+    const tunnelHostname = tunnel.url.replace("https://", "");
+    const tunnelPairingData = {
+      ...pairingData,
+      host: tunnelHostname,
+      port: 443,
+      tunnel: true,
+    };
+    log.info("Scan this QR code with your phone to connect:");
+    displayQRCode(tunnelPairingData);
+    log.info(`Or connect manually: ${tunnel.wsUrl}`);
 
     // 4. Wire up event handlers
     this.transport.onConnect((client) => {

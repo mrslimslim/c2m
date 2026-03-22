@@ -13,9 +13,7 @@ struct SessionDetailView: View {
     let sessionID: String
 
     @State private var draft: String = ""
-    @State private var requestedPath: String = ""
     @State private var errorMessage: String?
-    @State private var showFileRequest: Bool = false
     @State private var sessionConfig = SessionConfig()
     @State private var slashWorkflow = SlashWorkflowState()
     @State private var showSlashMenu = false
@@ -23,7 +21,6 @@ struct SessionDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var showCopiedConversation = false
     @FocusState private var isComposerFocused: Bool
-    @FocusState private var isFileRequestFocused: Bool
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -122,16 +119,6 @@ struct SessionDetailView: View {
                             .foregroundStyle(CPTheme.error)
                     }
                     .disabled(session == nil)
-
-                    Button {
-                        prepareForModalTransition {
-                            showFileRequest = true
-                        }
-                    } label: {
-                        Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
         }
@@ -164,9 +151,6 @@ struct SessionDetailView: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
-        }
-        .sheet(isPresented: $showFileRequest) {
-            fileRequestSheet
         }
         .alert("Delete Session?", isPresented: $showDeleteConfirmation) {
             Button("Delete", role: .destructive) {
@@ -386,63 +370,6 @@ struct SessionDetailView: View {
         .background(.ultraThinMaterial)
     }
 
-    // MARK: - File Request Sheet
-
-    private var fileRequestSheet: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                VStack(spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .fill(CPTheme.accentMuted)
-                            .frame(width: 56, height: 56)
-                        Image(systemName: "doc.badge.plus")
-                            .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(CPTheme.accent)
-                    }
-
-                    Text("Request File")
-                        .font(.headline)
-                }
-                .padding(.top, 20)
-
-                TextField("src/main.swift", text: $requestedPath)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.system(.subheadline, design: .monospaced))
-                    .focused($isFileRequestFocused)
-                    .padding(12)
-                    .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .padding(.horizontal)
-
-                Spacer()
-            }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { closeFileRequestSheet() }
-                        .foregroundStyle(.secondary)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Request") {
-                        requestFile()
-                        closeFileRequestSheet()
-                    }
-                    .fontWeight(.semibold)
-                    .tint(CPTheme.accent)
-                    .disabled(requestedPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
-        .onAppear {
-            DispatchQueue.main.async {
-                isFileRequestFocused = true
-            }
-        }
-    }
-
     // MARK: - Computed Properties
 
     private var navigationTitle: String {
@@ -526,20 +453,6 @@ struct SessionDetailView: View {
         }
     }
 
-    private func requestFile() {
-        let path = requestedPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return }
-
-        do {
-            try viewModel.requestFile(path: path)
-            appModel.refreshPublishedState()
-            requestedPath = ""
-            errorMessage = nil
-        } catch {
-            errorMessage = "Failed to request file."
-        }
-    }
-
     private func handleSlashBridgeAction(_ message: SlashActionMessage) {
         do {
             try viewModel.sendSlashAction(
@@ -590,14 +503,6 @@ struct SessionDetailView: View {
         }
     }
 
-    private func closeFileRequestSheet() {
-        isFileRequestFocused = false
-        resignActiveTextInput()
-        DispatchQueue.main.async {
-            showFileRequest = false
-        }
-    }
-
     private func dismissComposerKeyboard() {
         isComposerFocused = false
         resignActiveTextInput()
@@ -620,7 +525,6 @@ struct SessionDetailView: View {
 
     private func prepareForModalTransition(_ action: (() -> Void)? = nil) {
         isComposerFocused = false
-        isFileRequestFocused = false
         showSlashMenu = false
         resignActiveTextInput()
         if let action {

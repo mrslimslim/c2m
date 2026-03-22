@@ -1,17 +1,12 @@
 /**
- * LocalTransport — WebSocket server for LAN connections.
+ * LocalTransport — local WebSocket server used behind the tunnel.
  *
- * Listens on 0.0.0.0 and accepts connections authenticated with a random token.
- * Supports E2E encryption via handshake protocol.
+ * Listens on a local interface and accepts connections authenticated with a
+ * random token or E2E handshake.
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer, type Server as HttpServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { networkInterfaces } from "node:os";
 import { randomBytes } from "node:crypto";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   SESSION_REPLAY_CAPABILITY,
   SLASH_CATALOG_CAPABILITY,
@@ -123,12 +118,10 @@ interface ConnectedClient {
 
 export class LocalTransport implements TransportServer {
   private wss: WebSocketServer | null = null;
-  private httpServer: HttpServer | null = null;
   private clients = new Map<string, ConnectedClient>();
   private token: string;
   private port: number;
   private host: string;
-  private advertisedHost?: string;
 
   // E2E encryption keypair
   private keyPair: ReturnType<typeof generateKeyPair>;
@@ -142,13 +135,11 @@ export class LocalTransport implements TransportServer {
 
   constructor(
     port: number = DEFAULT_PORT,
-    host: string = "0.0.0.0",
-    advertisedHost?: string,
+    host: string = "127.0.0.1",
     pairingMaterial?: PairingMaterial,
   ) {
     this.port = port;
-    this.host = host;
-    this.advertisedHost = this.normalizeAdvertisedHost(advertisedHost);
+    this.host = this.normalizeHost(host);
     this.token = pairingMaterial?.token ?? randomBytes(16).toString("hex");
     this.keyPair = pairingMaterial?.keyPair ?? generateKeyPair();
     this.otp = pairingMaterial?.otp ?? randomBytes(3).toString("hex"); // 6-char hex OTP
@@ -156,7 +147,6 @@ export class LocalTransport implements TransportServer {
 
   async start(): Promise<{
     url: string;
-    httpUrl: string;
     pairingData: Record<string, unknown>;
     listenUrl: string;
   }> {
@@ -169,53 +159,13 @@ export class LocalTransport implements TransportServer {
         }
         startupSettled = true;
         this.wss?.off("error", rejectStartup);
-        this.httpServer?.off("error", rejectStartup);
         reject(normalizedError);
       };
 
-      // Create HTTP server to serve test client
-      this.httpServer = createServer((req, res) => {
-        if (
-          req.url === "/" ||
-          req.url === "/test-client.html" ||
-          req.url?.startsWith("/?") ||
-          req.url?.startsWith("/test-client.html?")
-        ) {
-          // Serve test-client.html — look for it relative to the package
-          try {
-            const __dirname = dirname(fileURLToPath(import.meta.url));
-            const htmlPath = resolve(__dirname, "../../test-client.html");
-            const html = readFileSync(htmlPath, "utf-8");
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-            res.end(html);
-          } catch {
-            res.writeHead(404);
-            res.end("test-client.html not found");
-          }
-        } else if (req.url === "/test-client.js" || req.url?.startsWith("/test-client.js?")) {
-          try {
-            const __dirname = dirname(fileURLToPath(import.meta.url));
-            const jsPath = resolve(__dirname, "../../test-client.js");
-            const js = readFileSync(jsPath, "utf-8");
-            res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
-            res.end(js);
-          } catch {
-            res.writeHead(404);
-            res.end("test-client.js not found");
-          }
-        } else {
-          res.writeHead(404);
-          res.end("Not found");
-        }
-      });
-
-      // Create WebSocket server attached to HTTP server
-      this.wss = new WebSocketServer({ server: this.httpServer });
+      this.wss = new WebSocketServer({ host: this.host, port: this.port });
       this.wss.once("error", rejectStartup);
-      this.httpServer.once("error", rejectStartup);
-
-      this.httpServer.listen(this.port, this.host, () => {
-        const address = this.httpServer?.address();
+      this.wss.once("listening", () => {
+        const address = this.wss?.address();
         if (!address || typeof address === "string") {
           rejectStartup(new Error("Failed to resolve the local bridge address"));
           return;
@@ -224,31 +174,21 @@ export class LocalTransport implements TransportServer {
         this.port = address.port;
         startupSettled = true;
         this.wss?.off("error", rejectStartup);
-        this.httpServer?.off("error", rejectStartup);
         this.wss?.on("error", (error) => {
           log.error(`WebSocket server error: ${error.message}`);
         });
-        this.httpServer?.on("error", (error) => {
-          log.error(`HTTP server error: ${error.message}`);
-        });
-
-        const isIPv6 = this.host.includes(":");
-        const localIp = this.getLocalIp(isIPv6);
-        const advertisedHost = this.advertisedHost ?? localIp;
-        const hostForUrl = advertisedHost.includes(":") ? `[${advertisedHost}]` : advertisedHost;
-        const listenHostForUrl = localIp.includes(":") ? `[${localIp}]` : localIp;
+        const pairingHost = this.resolvePairingHost();
+        const hostForUrl = pairingHost.includes(":") ? `[${pairingHost}]` : pairingHost;
         const url = `ws://${hostForUrl}:${this.port}`;
-        const httpUrl = `http://${hostForUrl}:${this.port}`;
-        const listenUrl = `ws://${listenHostForUrl}:${this.port}`;
         const pairingData = {
-          host: advertisedHost,
+          host: pairingHost,
           port: this.port,
           token: this.token,
           bridge_pubkey: this.keyPair.publicKeyBase64,
           otp: this.otp,
           protocol: "codepilot-v1-e2e",
         };
-        resolvePromise({ url, httpUrl, pairingData, listenUrl });
+        resolvePromise({ url, pairingData, listenUrl: url });
       });
 
       this.wss.on("connection", (ws) => {
@@ -425,13 +365,9 @@ export class LocalTransport implements TransportServer {
     }
     this.clients.clear();
     if (this.wss) {
-      this.wss.close();
-      this.wss = null;
-    }
-    if (this.httpServer) {
       return new Promise((resolve) => {
-        this.httpServer!.close(() => resolve());
-        this.httpServer = null;
+        this.wss!.close(() => resolve());
+        this.wss = null;
       });
     }
   }
@@ -465,49 +401,32 @@ export class LocalTransport implements TransportServer {
     return JSON.stringify(message);
   }
 
-  private getLocalIp(preferIPv6: boolean = false): string {
-    const interfaces = networkInterfaces();
-    // If preferring IPv6, look for global unicast address first
-    if (preferIPv6) {
-      for (const name of Object.keys(interfaces)) {
-        for (const iface of interfaces[name] ?? []) {
-          if (
-            iface.family === "IPv6" &&
-            !iface.internal &&
-            !iface.address.startsWith("fe80")  // skip link-local
-          ) {
-            return iface.address;
-          }
-        }
-      }
-    }
-    // Fallback to IPv4
-    for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name] ?? []) {
-        if (iface.family === "IPv4" && !iface.internal) {
-          return iface.address;
-        }
-      }
-    }
-    return preferIPv6 ? "::1" : "127.0.0.1";
-  }
-
-  private normalizeAdvertisedHost(host?: string): string | undefined {
-    const trimmed = host?.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-
-    return trimmed.replace(/^\[(.*)\]$/, "$1");
-  }
-
   private normalizeStartupError(error: Error): Error {
     if (this.isErrnoException(error) && error.code === "EADDRINUSE") {
       return new Error(
-        `Port ${this.port} is already in use on ${this.host}. Stop the other bridge or retry with --port auto.`,
+        `Port ${this.port} is already in use on ${this.host}. Stop the other bridge and retry.`,
       );
     }
     return error;
+  }
+
+  private resolvePairingHost(): string {
+    if (this.host === "0.0.0.0") {
+      return "127.0.0.1";
+    }
+    if (this.host === "::") {
+      return "::1";
+    }
+    return this.host;
+  }
+
+  private normalizeHost(host: string): string {
+    const trimmed = host.trim();
+    if (!trimmed) {
+      return "127.0.0.1";
+    }
+
+    return trimmed.replace(/^\[(.*)\]$/, "$1");
   }
 
   private isErrnoException(error: unknown): error is NodeJS.ErrnoException {

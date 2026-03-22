@@ -15,7 +15,6 @@ export interface TransportServer {
    */
   start(): Promise<{
     url: string;
-    httpUrl: string;
     pairingData: Record<string, unknown>;
     listenUrl?: string;
   }>;

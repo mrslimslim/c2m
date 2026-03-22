@@ -48,15 +48,17 @@ describe("LocalTransport E2E sessions", () => {
     const transport = new LocalTransport(0, "127.0.0.1");
 
     try {
-      const { url, httpUrl, listenUrl, pairingData } = await transport.start();
+      const started = await transport.start();
+      const { url, listenUrl, pairingData } = started;
       const actualPort = Number(pairingData.port);
 
       assert.ok(Number.isInteger(actualPort));
       assert.ok(actualPort > 0);
       assert.notEqual(actualPort, 0);
       assert.equal(new URL(url).port, String(actualPort));
-      assert.equal(new URL(httpUrl).port, String(actualPort));
       assert.equal(new URL(listenUrl).port, String(actualPort));
+      assert.equal(pairingData.host, "127.0.0.1");
+      assert.equal("httpUrl" in started, false);
     } finally {
       await transport.stop();
     }
@@ -113,12 +115,12 @@ describe("LocalTransport E2E sessions", () => {
 
     try {
       const firstMaterial = await loadOrCreatePairingMaterial({ filePath });
-      const firstTransport = new LocalTransport(firstPort, "127.0.0.1", undefined, firstMaterial);
+      const firstTransport = new LocalTransport(firstPort, "127.0.0.1", firstMaterial);
       const first = await firstTransport.start();
       await firstTransport.stop();
 
       const secondMaterial = await loadOrCreatePairingMaterial({ filePath });
-      const secondTransport = new LocalTransport(secondPort, "127.0.0.1", undefined, secondMaterial);
+      const secondTransport = new LocalTransport(secondPort, "127.0.0.1", secondMaterial);
       const second = await secondTransport.start();
       await secondTransport.stop();
 
@@ -130,16 +132,15 @@ describe("LocalTransport E2E sessions", () => {
     }
   });
 
-  it("uses the advertised host in pairing output without changing the listen port", async () => {
+  it("uses the bound host in pairing output without a separate advertised host override", async () => {
     const port = await getAvailablePort();
-    const transport = new LocalTransport(port, "127.0.0.1", "codepilot.tailnet.ts.net");
+    const transport = new LocalTransport(port, "127.0.0.1");
 
     try {
-      const { url, httpUrl, pairingData } = await transport.start();
+      const { url, pairingData } = await transport.start();
 
-      assert.equal(url, `ws://codepilot.tailnet.ts.net:${port}`);
-      assert.equal(httpUrl, `http://codepilot.tailnet.ts.net:${port}`);
-      assert.equal(pairingData.host, "codepilot.tailnet.ts.net");
+      assert.equal(url, `ws://127.0.0.1:${port}`);
+      assert.equal(pairingData.host, "127.0.0.1");
       assert.equal(pairingData.port, port);
     } finally {
       await transport.stop();

@@ -9,8 +9,8 @@
     "codepilot": "dist/bin/codepilot.js"
   },
   "scripts": {
-    "build": "tsc",
-    "test": "node --test dist/__tests__/*.test.js test-client.test.js",
+    "build": "rm -rf dist && tsc",
+    "test": "node --test dist/__tests__/*.test.js",
     "dev": "tsc --watch",
     "start": "node dist/bin/codepilot.js",
     "clean": "rm -rf dist"
