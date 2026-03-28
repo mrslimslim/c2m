@@ -49,6 +49,20 @@ fn validate_phone_message_accepts_supported_phone_messages() {
 }
 
 #[test]
+fn validate_phone_message_accepts_file_search_requests() {
+    assert_eq!(
+        validate_phone_message(json!({
+            "type": "file_search_req",
+            "sessionId": "session-1",
+            "query": "turnview",
+            "limit": 12,
+        }))
+        .map(|message| matches!(message, PhoneMessage::FileSearchReq { .. })),
+        Some(true)
+    );
+}
+
+#[test]
 fn validate_phone_message_rejects_unknown_or_malformed_messages() {
     assert_eq!(
         validate_phone_message(json!({
