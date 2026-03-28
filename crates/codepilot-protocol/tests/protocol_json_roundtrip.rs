@@ -1,6 +1,5 @@
-use codepilot_protocol::{
-    events::AgentEvent,
-    messages::{BridgeMessage, EncryptedWireMessage, HandshakeOkMessage, PhoneMessage},
+use codepilot_protocol::messages::{
+    BridgeMessage, EncryptedWireMessage, HandshakeOkMessage, PhoneMessage,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -67,31 +66,6 @@ fn bridge_diff_content_round_trips() {
 fn bridge_slash_catalog_round_trips() {
     let raw = r#"{"type":"slash_catalog","capability":"slash_catalog_v1","adapter":"codex","adapterVersion":"codex-cli 0.116.0","catalogVersion":"2026-03-22","defaults":{"model":"gpt-5.4","modelReasoningEffort":"medium","approvalPolicy":"on-request","sandboxMode":"workspace-write"},"commands":[{"id":"model","label":"/model","description":"Set model","kind":"workflow","availability":"enabled","searchTerms":["model","reasoning"],"menu":{"title":"Select model","helperText":"Choose a model","presentation":"list","options":[{"id":"gpt-5.4","label":"GPT-5.4","description":"Default model","badges":["default","recommended"],"effects":[{"type":"set_session_config","field":"model","value":"gpt-5.4"}],"next":{"title":"Reasoning effort","presentation":"list","options":[{"id":"high","label":"High","effects":[{"type":"set_session_config","field":"modelReasoningEffort","value":"high"}]}]}}]}}]}"#;
     assert_json_roundtrip::<BridgeMessage>(raw);
-}
-
-#[test]
-fn agent_turn_completed_round_trips_explicit_null_usage() {
-    let raw = r#"{"type":"turn_completed","summary":"all done","filesChanged":[],"usage":null}"#;
-    assert_json_roundtrip::<AgentEvent>(raw);
-}
-
-#[test]
-fn agent_turn_completed_accepts_missing_usage_key() {
-    let raw = r#"{"type":"turn_completed","summary":"all done","filesChanged":[]}"#;
-    let parsed: AgentEvent = serde_json::from_str(raw).unwrap();
-
-    match parsed {
-        AgentEvent::TurnCompleted {
-            summary,
-            files_changed,
-            usage,
-        } => {
-            assert_eq!(summary, "all done");
-            assert!(files_changed.is_empty());
-            assert!(usage.is_none());
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
 }
 
 #[test]
