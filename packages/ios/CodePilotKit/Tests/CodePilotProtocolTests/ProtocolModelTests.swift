@@ -168,6 +168,21 @@ final class ProtocolModelTests: XCTestCase {
             json: #"{"type":"file_content","path":"README.md","content":"hi","language":"markdown"}"#,
             expected: .fileContent(path: "README.md", content: "hi", language: "markdown")
         )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"file_search_results","sessionId":"session-1","query":"turnview","results":[{"path":"Sources/TurnView.swift","displayName":"TurnView.swift","directoryHint":"Sources"}]}"#,
+            expected: .fileSearchResults(
+                sessionId: "session-1",
+                query: "turnview",
+                results: [
+                    .init(
+                        path: "Sources/TurnView.swift",
+                        displayName: "TurnView.swift",
+                        directoryHint: "Sources"
+                    ),
+                ]
+            )
+        )
         let firstHunk = DiffHunk(
             oldStart: 10,
             oldLineCount: 2,
