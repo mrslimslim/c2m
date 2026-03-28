@@ -53,6 +53,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case event(sessionId: String, event: AgentEvent, eventId: Int, timestamp: Int)
     case sessionList(sessions: [SessionInfo])
     case fileContent(path: String, content: String, language: String)
+    case fileSearchResults(sessionId: String, query: String, results: [FileSearchMatch])
     case diffContent(sessionId: String, eventId: Int, files: [DiffFile])
     case diffHunksContent(sessionId: String, eventId: Int, path: String, hunks: [DiffHunk], nextHunkIndex: Int?)
     case pong(latencyMs: Int)
@@ -73,6 +74,8 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case path
         case content
         case language
+        case query
+        case results
         case files
         case hunks
         case nextHunkIndex
@@ -94,6 +97,7 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case event
         case sessionList = "session_list"
         case fileContent = "file_content"
+        case fileSearchResults = "file_search_results"
         case diffContent = "diff_content"
         case diffHunksContent = "diff_hunks_content"
         case pong
@@ -122,6 +126,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 path: try container.decode(String.self, forKey: .path),
                 content: try container.decode(String.self, forKey: .content),
                 language: try container.decode(String.self, forKey: .language)
+            )
+        case .fileSearchResults:
+            self = .fileSearchResults(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                query: try container.decode(String.self, forKey: .query),
+                results: try container.decode([FileSearchMatch].self, forKey: .results)
             )
         case .diffContent:
             self = .diffContent(
@@ -189,6 +199,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(path, forKey: .path)
             try container.encode(content, forKey: .content)
             try container.encode(language, forKey: .language)
+        case let .fileSearchResults(sessionId, query, results):
+            try container.encode(MessageType.fileSearchResults, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(query, forKey: .query)
+            try container.encode(results, forKey: .results)
         case let .diffContent(sessionId, eventId, files):
             try container.encode(MessageType.diffContent, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)

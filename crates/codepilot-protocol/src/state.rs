@@ -95,3 +95,13 @@ pub struct SessionInfo {
     pub created_at: i64,
     pub last_active_at: i64,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchMatch {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_hint: Option<String>,
+}

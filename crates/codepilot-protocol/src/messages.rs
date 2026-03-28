@@ -5,7 +5,7 @@ use serde_json::Number;
 
 use crate::{
     events::AgentEvent,
-    state::{AgentType, DiffFile, DiffHunk, SessionInfo},
+    state::{AgentType, DiffFile, DiffHunk, FileSearchMatch, SessionInfo},
 };
 
 pub const SESSION_REPLAY_CAPABILITY: &str = "session_replay_v1";
@@ -224,6 +224,12 @@ pub enum PhoneMessage {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
+    FileSearchReq {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        query: String,
+        limit: u64,
+    },
     DeleteSession {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -281,6 +287,12 @@ pub enum BridgeMessage {
         path: String,
         content: String,
         language: String,
+    },
+    FileSearchResults {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        query: String,
+        results: Vec<FileSearchMatch>,
     },
     Pong {
         #[serde(rename = "latencyMs")]

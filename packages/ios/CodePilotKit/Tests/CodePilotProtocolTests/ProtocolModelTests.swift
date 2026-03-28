@@ -68,6 +68,11 @@ final class ProtocolModelTests: XCTestCase {
         )
         try assertRoundTrip(
             PhoneMessage.self,
+            json: #"{"type":"file_search_req","sessionId":"session-1","query":"turnview","limit":12}"#,
+            expected: .fileSearchRequest(sessionId: "session-1", query: "turnview", limit: 12)
+        )
+        try assertRoundTrip(
+            PhoneMessage.self,
             json: #"{"type":"delete_session","sessionId":"session-1"}"#,
             expected: .deleteSession(sessionId: "session-1")
         )

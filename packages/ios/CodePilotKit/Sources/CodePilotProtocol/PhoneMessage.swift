@@ -72,6 +72,7 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
     case slashAction(SlashActionMessage)
     case cancel(sessionId: String)
     case fileRequest(path: String, sessionId: String)
+    case fileSearchRequest(sessionId: String, query: String, limit: Int)
     case deleteSession(sessionId: String)
     case listSessions
     case ping(ts: Int)
@@ -84,6 +85,8 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case text
         case sessionId
         case path
+        case query
+        case limit
         case ts
         case config
         case afterEventId
@@ -98,6 +101,7 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
         case slashAction = "slash_action"
         case cancel
         case fileRequest = "file_req"
+        case fileSearchRequest = "file_search_req"
         case deleteSession = "delete_session"
         case listSessions = "list_sessions"
         case ping
@@ -131,6 +135,12 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
             self = .fileRequest(
                 path: try container.decode(String.self, forKey: .path),
                 sessionId: try container.decode(String.self, forKey: .sessionId)
+            )
+        case .fileSearchRequest:
+            self = .fileSearchRequest(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                query: try container.decode(String.self, forKey: .query),
+                limit: try container.decode(Int.self, forKey: .limit)
             )
         case .deleteSession:
             self = .deleteSession(sessionId: try container.decode(String.self, forKey: .sessionId))
@@ -181,6 +191,11 @@ public enum PhoneMessage: Codable, Equatable, Sendable {
             try container.encode(MessageType.fileRequest, forKey: .type)
             try container.encode(path, forKey: .path)
             try container.encode(sessionId, forKey: .sessionId)
+        case let .fileSearchRequest(sessionId, query, limit):
+            try container.encode(MessageType.fileSearchRequest, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(query, forKey: .query)
+            try container.encode(limit, forKey: .limit)
         case let .deleteSession(sessionId):
             try container.encode(MessageType.deleteSession, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
