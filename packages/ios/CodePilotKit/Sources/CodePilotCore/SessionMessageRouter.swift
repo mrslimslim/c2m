@@ -41,6 +41,7 @@ public final class SessionMessageRouter {
                 diagnostics.recordInfo("session_remap:\(remap.from)->\(remap.to)")
             }
             diagnostics.recordInfo("session_list:\(sessions.count)")
+            diagnostics.recordInfo("session_list_ids:\(describeSessions(sessions))")
 
         case let .event(sessionId, event, eventId, timestamp):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
@@ -83,6 +84,10 @@ public final class SessionMessageRouter {
                 fallbackSessionId: sessionStore.activeSessionId
             )
             diagnostics.recordInfo("file_content:\(path)")
+
+        case let .fileSearchResults(sessionId, query, results):
+            // Task 1 contract plumbing only: acknowledge the message for exhaustiveness.
+            diagnostics.recordInfo("file_search_results:\(sessionId):\(query):\(results.count)")
 
         case let .diffContent(sessionId, eventId, files):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
@@ -169,5 +174,16 @@ public final class SessionMessageRouter {
         case .error: return "error"
         case .turnCompleted: return "turn_completed"
         }
+    }
+
+    private func describeSessions(_ sessions: [SessionInfo]) -> String {
+        if sessions.isEmpty {
+            return "[]"
+        }
+
+        let parts = sessions.map { session in
+            "\(session.id){state=\(session.state.rawValue),updated=\(session.lastActiveAt)}"
+        }
+        return "[\(parts.joined(separator: ","))]"
     }
 }
