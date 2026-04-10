@@ -58,8 +58,6 @@ pwd
 
 ```bash
 cargo --version
-node -v
-pnpm -v
 swift --version
 xcodebuild -version
 codex --version
@@ -70,9 +68,8 @@ rustup target list --installed | grep wasm32-unknown-unknown
 
 预期结果：
 
-- `cargo`、`node`、`pnpm`、`swift`、`xcodebuild`、`codex`、`cloudflared` 都能正常返回版本
+- `cargo`、`swift`、`xcodebuild`、`codex`、`cloudflared` 都能正常返回版本
 - `codex login status` 成功返回已登录状态
-- 已安装 `wasm32-unknown-unknown`
 
 失败时先看：
 
@@ -85,12 +82,14 @@ rustup target list --installed | grep wasm32-unknown-unknown
 如果这轮也要发布 `Relay Worker`，再补一项 Cloudflare 登录态检查：
 
 ```bash
-npx wrangler whoami
+wrangler whoami
+rustup target list --installed | grep wasm32-unknown-unknown
 ```
 
 预期结果：
 
 - 能返回当前 Cloudflare 账号信息，而不是要求重新登录
+- 已安装 `wasm32-unknown-unknown`
 
 也可以直接执行封装命令：
 
@@ -111,7 +110,7 @@ ctunnel preflight --with-relay
 先跑一遍根级快速检查：
 
 ```bash
-pnpm run check
+cargo test --workspace
 ```
 
 说明：
@@ -312,7 +311,7 @@ ctunnel
 只有当本轮也要发布 relay 时才执行以下步骤：
 
 ```bash
-pnpm run relay:deploy
+ctunnel relay deploy
 ```
 
 部署完成后做健康检查：
@@ -333,7 +332,8 @@ curl https://<your-worker-domain>/health
 如果还要做本地 smoke check，可补充：
 
 ```bash
-pnpm run relay:dev
+cd crates/codepilot-relay-worker
+wrangler dev
 ```
 
 ---

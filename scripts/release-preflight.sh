@@ -93,8 +93,6 @@ section "Environment checks"
 run_check "pwd" pwd || true
 
 check_cmd cargo
-check_cmd node
-check_cmd pnpm
 check_cmd swift
 check_cmd xcodebuild
 check_cmd codex
@@ -103,12 +101,6 @@ check_cmd rustup
 
 if command -v cargo >/dev/null 2>&1; then
   run_check "cargo --version" cargo --version || true
-fi
-if command -v node >/dev/null 2>&1; then
-  run_check "node -v" node -v || true
-fi
-if command -v pnpm >/dev/null 2>&1; then
-  run_check "pnpm -v" pnpm -v || true
 fi
 if command -v swift >/dev/null 2>&1; then
   run_check "swift --version" swift --version || true
@@ -124,7 +116,7 @@ if command -v cloudflared >/dev/null 2>&1; then
   run_check "cloudflared --version" cloudflared --version || true
 fi
 
-if command -v rustup >/dev/null 2>&1; then
+if [[ "$WITH_RELAY" -eq 1 ]] && command -v rustup >/dev/null 2>&1; then
   print_cmd rustup target list --installed
   if rustup target list --installed | grep -q 'wasm32-unknown-unknown'; then
     echo "wasm32-unknown-unknown is installed"
@@ -133,13 +125,13 @@ if command -v rustup >/dev/null 2>&1; then
   fi
 fi
 
-if [[ "$WITH_RELAY" -eq 1 && -z "$(command -v npx || true)" ]]; then
-  record_blocker "Missing required command: npx"
+if [[ "$WITH_RELAY" -eq 1 && -z "$(command -v wrangler || true)" ]]; then
+  record_blocker "Missing required command: wrangler"
 fi
 
-if [[ "$WITH_RELAY" -eq 1 && -n "$(command -v npx || true)" ]]; then
+if [[ "$WITH_RELAY" -eq 1 && -n "$(command -v wrangler || true)" ]]; then
   section "Cloudflare login"
-  run_check "npx wrangler whoami" npx wrangler whoami || true
+  run_check "wrangler whoami" wrangler whoami || true
 fi
 
 if command -v cargo >/dev/null 2>&1 && command -v swift >/dev/null 2>&1 && command -v xcodebuild >/dev/null 2>&1; then

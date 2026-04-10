@@ -27,8 +27,8 @@
 |------|------|------|
 | Rust | stable | 默认构建、测试和桥接运行时 |
 | Cargo | 随 Rust 安装 | 负责 workspace 构建和测试 |
-| Node.js | >= 18 | `npx wrangler` 与根级 `pnpm run` 包装命令需要 |
-| pnpm | >= 8 | 运行根脚本 |
+| Swift | Xcode 自带 | 构建和验证 iOS 客户端 |
+| Xcode | 最新稳定版 | 运行 simulator build |
 
 ### 1.2 推荐安装
 
@@ -41,9 +41,9 @@ rustup target add wasm32-unknown-unknown
 
 | 依赖 | 安装方式 | 说明 |
 |------|----------|------|
-| Codex CLI | `npm i -g @openai/codex` | 验证 Codex adapter 时使用 |
-| Claude Code CLI | `npm i -g @anthropic-ai/claude-code` | 验证 Claude adapter 时使用 |
-| Wrangler | `npm i -g wrangler` | 可选；未全局安装时也可直接用 `npx wrangler` |
+| Codex CLI | 按你的常用方式安装 | 验证 Codex adapter 时使用 |
+| Claude Code CLI | 按你的常用方式安装 | 验证 Claude adapter 时使用 |
+| Wrangler | 官方 CLI | 仅在部署或本地调试 relay 时使用 |
 
 ### 1.4 Codex 登录态
 
@@ -60,21 +60,18 @@ codex login status
 
 | 命令 | 作用 |
 |------|------|
-| `pnpm run build` | 构建整个 Cargo workspace，并额外编译 Relay 的 wasm32 目标 |
-| `pnpm run build:bridge` | 只构建 `codepilot-bridge` |
-| `pnpm run build:relay` | 只构建 `codepilot-relay-worker` 的 wasm32 目标 |
-| `pnpm run test` | 跑完整 Rust 测试套件 |
-| `pnpm run test:bridge` | 只跑 Bridge crate 测试 |
-| `pnpm run test:relay` | 只跑 Relay Worker crate 测试 |
-| `pnpm run test:agents` | 只跑 agent adapter 测试 |
-| `pnpm run bridge:help` | 查看当前 Rust Bridge CLI 参数面 |
-| `pnpm run bridge -- --agent codex --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge |
-| `pnpm run bridge -- --agent codex --tunnel --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge，并附加 Cloudflare Tunnel |
+| `cargo build --workspace` | 构建整个 Cargo workspace |
+| `cargo test --workspace` | 跑完整 Rust 测试套件 |
+| `cargo test -p codepilot-bridge` | 只跑 Bridge crate 测试 |
+| `cargo test -p codepilot-relay-worker` | 只跑 Relay Worker crate 测试 |
+| `cargo test -p codepilot-agents` | 只跑 agent adapter 测试 |
+| `cargo run -p codepilot-bridge -- --help` | 查看当前 Rust Bridge CLI 参数面 |
+| `cargo run -p codepilot-bridge -- --agent codex --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge |
+| `cargo run -p codepilot-bridge -- --agent codex --tunnel --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge，并附加 Cloudflare Tunnel |
 | `ctunnel` | 以默认 `codex + tunnel` 配置启动 Bridge，工作目录默认 `/Users/mrslimslim/.openclaw` |
 | `ctunnel preflight` | 运行上线前自动化自检 |
 | `ctunnel relay deploy` | 部署 Cloudflare Relay Worker |
-| `pnpm run relay:dev` | 在 Rust Relay crate 目录下启动 `wrangler dev` |
-| `pnpm run relay:deploy` | 部署 Rust Relay Worker |
+| `cd crates/codepilot-relay-worker && wrangler dev` | 在 Relay crate 目录下启动本地 Worker |
 
 如需直接使用底层命令，可参考：
 
@@ -83,7 +80,7 @@ cargo build --workspace
 cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown
 cargo test --workspace
 cargo run -p codepilot-bridge -- --help
-cd crates/codepilot-relay-worker && npx wrangler dev
+cd crates/codepilot-relay-worker && wrangler dev
 ```
 
 ---
@@ -93,7 +90,7 @@ cd crates/codepilot-relay-worker && npx wrangler dev
 ### 3.1 查看 CLI 参数面
 
 ```bash
-pnpm run bridge:help
+cargo run -p codepilot-bridge -- --help
 ```
 
 当前 Rust Bridge CLI 暴露的参数：
@@ -124,16 +121,16 @@ cargo test -p codepilot-agents
 ### 3.3 手动运行 Bridge 二进制
 
 ```bash
-pnpm run bridge -- --agent codex --dir .
+cargo run -p codepilot-bridge -- --agent codex --dir .
 ```
 
 如果你需要公网可达的 pairing payload，可直接运行：
 
 ```bash
-pnpm run bridge -- --agent codex --tunnel --dir .
+cargo run -p codepilot-bridge -- --agent codex --tunnel --dir .
 ```
 
-如果你只是想确认当前 Rust CLI 是否可运行，优先用 `pnpm run bridge:help`。如果你要验证更深的 Bridge 行为，优先跑 `codepilot-bridge` 与 `codepilot-core` 的测试。
+如果你只是想确认当前 Rust CLI 是否可运行，优先用 `cargo run -p codepilot-bridge -- --help`。如果你要验证更深的 Bridge 行为，优先跑 `codepilot-bridge` 与 `codepilot-core` 的测试。
 
 ---
 
@@ -142,13 +139,8 @@ pnpm run bridge -- --agent codex --tunnel --dir .
 ### 4.1 本地启动
 
 ```bash
-pnpm run relay:dev
-```
-
-这条命令会进入 `crates/codepilot-relay-worker` 并执行：
-
-```bash
-npx wrangler dev
+cd crates/codepilot-relay-worker
+wrangler dev
 ```
 
 默认配置文件位于：
@@ -158,12 +150,6 @@ crates/codepilot-relay-worker/wrangler.toml
 ```
 
 ### 4.2 单独构建 Worker
-
-```bash
-pnpm run build:relay
-```
-
-底层等价于：
 
 ```bash
 cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown
@@ -182,19 +168,19 @@ Rust Relay 目前有两个关键入口：
 cargo test -p codepilot-relay-worker
 ```
 
-然后再用 `pnpm run relay:dev` 做本地 Worker smoke check。
+然后再用 `wrangler dev` 做本地 Worker smoke check。
 
 ### 4.4 部署到 Cloudflare
 
 ```bash
-pnpm run relay:deploy
+ctunnel relay deploy
 ```
 
 或手动执行：
 
 ```bash
 cd crates/codepilot-relay-worker
-npx wrangler deploy
+wrangler deploy
 ```
 
 ---
@@ -215,7 +201,7 @@ cargo test -p codepilot-relay-worker
 如果你只想做一次根级自检：
 
 ```bash
-pnpm run check
+cargo test --workspace
 ```
 
 ---
@@ -241,20 +227,14 @@ rustup default stable
 rustup target add wasm32-unknown-unknown
 ```
 
-### Q: `npx wrangler dev` 失败
+### Q: `wrangler dev` 失败
 
-**原因**：Node.js 版本过低，或当前环境没有可用的 Wrangler。
+**原因**：当前环境没有可用的 Wrangler CLI，或 Cloudflare 登录态失效。
 **解决**：
 
 ```bash
-node -v
-npx wrangler --version
-```
-
-必要时可全局安装：
-
-```bash
-npm install -g wrangler
+wrangler --version
+wrangler whoami
 ```
 
 ### Q: `codex` 或 `claude` 不在 PATH 中

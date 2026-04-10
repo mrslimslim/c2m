@@ -44,7 +44,11 @@ run_preflight() {
 
 run_relay_deploy() {
   cd "$ROOT_DIR/crates/codepilot-relay-worker"
-  exec npx wrangler deploy "$@"
+  if ! command -v wrangler >/dev/null 2>&1; then
+    echo "wrangler is required for relay deployment" >&2
+    exit 1
+  fi
+  exec wrangler deploy "$@"
 }
 
 if [[ $# -eq 0 ]]; then

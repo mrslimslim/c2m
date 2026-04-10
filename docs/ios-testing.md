@@ -25,19 +25,19 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 1. Build the workspace:
 
 ```bash
-pnpm run build
+cargo build --workspace
 ```
 
 2. For LAN verification, start the Rust bridge in Codex mode:
 
 ```bash
-pnpm run bridge -- --agent codex --dir /absolute/path/to/test-repo
+cargo run -p codepilot-bridge -- --agent codex --dir /absolute/path/to/test-repo
 ```
 
 3. For public-network verification, start the Rust bridge with tunnel mode:
 
 ```bash
-pnpm run bridge -- --agent codex --tunnel --dir /absolute/path/to/test-repo
+cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /absolute/path/to/test-repo
 ```
 
 4. Confirm the bridge terminal prints a QR code or pairing payload containing `host`/`port`, plus `bridge_pubkey` and `otp`. In tunnel mode the payload should also include `tunnel: true`.

@@ -10,3 +10,6 @@ target/
 packages/ios/**/.build/
 packages/ios/**/.swiftpm/
 packages/ios/**/xcuserdata/
+.claude/
+.superpowers/
+

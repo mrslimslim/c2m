@@ -35,12 +35,11 @@ Run Codex on your Mac. Control it from your iPhone over Cloudflare Tunnel.
 
 - macOS
 - Rust stable
-- Node.js 18+
-- `pnpm`
 - `cloudflared`
 - `codex`
 - a working Codex CLI login
 - Xcode if you want to build the iPhone app locally
+- optional: `wrangler` if you want to deploy the relay worker
 
 Install the missing pieces:
 
@@ -48,7 +47,6 @@ Install the missing pieces:
 brew install cloudflared
 rustup toolchain install stable
 rustup target add wasm32-unknown-unknown
-npm install -g @openai/codex
 ```
 
 Authenticate Codex once:
@@ -70,14 +68,6 @@ export CTUNNEL_DIR=/absolute/path/to/project
 ### Expose `ctunnel` as a command
 
 This repo already ships a real CLI entrypoint at `bin/ctunnel`.
-
-Option A:
-
-```bash
-pnpm link --global
-```
-
-Option B:
 
 ```bash
 ln -s "$(pwd)/bin/ctunnel" ~/.local/bin/ctunnel
@@ -120,6 +110,7 @@ ctunnel --help
 - `ctunnel start`: explicit form of the default command
 - `ctunnel preflight`: run automated environment, build, test, and iOS simulator checks
 - `ctunnel relay deploy`: deploy the Cloudflare relay worker
+  Requires a globally available `wrangler` CLI.
 
 ## Current workflow
 
