@@ -5,7 +5,7 @@ pub fn build_codex_exec_args(
     session_id: Option<&str>,
     bypass_approvals_and_sandbox: bool,
 ) -> Vec<String> {
-    let mut args = vec!["exec".to_owned(), "--experimental-json".to_owned()];
+    let mut args = vec!["exec".to_owned(), "--json".to_owned()];
 
     if bypass_approvals_and_sandbox {
         args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());

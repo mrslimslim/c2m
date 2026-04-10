@@ -98,6 +98,8 @@ public final class SessionStore {
         lock.lock()
         defer { lock.unlock() }
 
+        discardConflictingAliasesLocked(incomingSessionIDs: sessions.map(\.id))
+
         let previousById = storageById
         let incomingById = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         let remaps = detectRemaps(previousById: previousById, incomingById: incomingById)
@@ -138,6 +140,18 @@ public final class SessionStore {
         storageById = merged
         refreshActiveSessionAfterListUpdateLocked(remaps: remaps)
         return remaps
+    }
+
+    private func discardConflictingAliasesLocked(incomingSessionIDs: [String]) {
+        for sessionID in incomingSessionIDs {
+            guard storageById[sessionID] == nil else {
+                continue
+            }
+            guard idAliases[sessionID] != nil else {
+                continue
+            }
+            idAliases[sessionID] = nil
+        }
     }
 
     public func setActiveSession(id: String?) {

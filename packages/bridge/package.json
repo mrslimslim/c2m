@@ -1,0 +1,30 @@
+{
+  "name": "@codepilot/bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "codepilot": "dist/bin/codepilot.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "test": "node --test dist/__tests__/*.test.js",
+    "dev": "tsc --watch",
+    "start": "node dist/bin/codepilot.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@codepilot/protocol": "workspace:*",
+    "@openai/codex-sdk": "^0.114.0",
+    "commander": "^13.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}

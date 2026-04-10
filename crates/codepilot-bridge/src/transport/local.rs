@@ -16,21 +16,28 @@ use codepilot_protocol::messages::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::{
-    net::TcpListener,
-    sync::mpsc,
-    task::JoinHandle,
-};
+use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
 use crate::transport::types::{TransportClient, TransportServer};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LocalTransportOutcome {
-    OutgoingText { client_id: String, payload: String },
-    IncomingPhoneMessage { client_id: String, message: PhoneMessage },
-    Connected { client_id: String },
-    Disconnected { client_id: String, reason: String },
+    OutgoingText {
+        client_id: String,
+        payload: String,
+    },
+    IncomingPhoneMessage {
+        client_id: String,
+        message: PhoneMessage,
+    },
+    Connected {
+        client_id: String,
+    },
+    Disconnected {
+        client_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -335,7 +342,9 @@ async fn handle_connection(
     stream: tokio::net::TcpStream,
     state: Arc<ServerState>,
 ) -> Result<(), String> {
-    let websocket = accept_async(stream).await.map_err(|error| error.to_string())?;
+    let websocket = accept_async(stream)
+        .await
+        .map_err(|error| error.to_string())?;
     let (mut write, mut read) = websocket.split();
     let (sender, mut receiver) = mpsc::unbounded_channel::<String>();
 
@@ -431,15 +440,14 @@ fn handle_initial_message(
                 SLASH_CATALOG_CAPABILITY.to_owned(),
             ]),
         };
-        client.send_text(
-            serde_json::to_string(&handshake_ok).map_err(|error| error.to_string())?,
-        );
+        client.send_text(serde_json::to_string(&handshake_ok).map_err(|error| error.to_string())?);
         (state.connect_handler)(client.clone());
         return Ok(true);
     }
 
     let is_legacy_auth = value.get("type").and_then(Value::as_str) == Some("auth")
-        && value.get("token").and_then(Value::as_str) == Some(state.pairing_material.token.as_str());
+        && value.get("token").and_then(Value::as_str)
+            == Some(state.pairing_material.token.as_str());
     if is_legacy_auth {
         if let Ok(mut crypto_state) = client.crypto_state.lock() {
             crypto_state.authenticated = true;
@@ -492,5 +500,8 @@ fn normalize_host(host: &str) -> String {
         return "127.0.0.1".to_owned();
     }
 
-    trimmed.trim_start_matches('[').trim_end_matches(']').to_owned()
+    trimmed
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned()
 }

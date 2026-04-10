@@ -16,7 +16,7 @@ This checklist is the repeatable acceptance guide for the current native iOS cli
 ## Recommended Test Environment
 
 - One physical iPhone running the latest local build or TestFlight build.
-- One Mac running the CodePilot bridge on the same LAN as the phone.
+- One Mac running the CTunnel bridge on the same LAN as the phone.
 - Optional: internet access for Cloudflare Tunnel verification.
 - A test repo with at least one readable file such as `README.md`.
 

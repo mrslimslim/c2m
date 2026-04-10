@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+DEFAULT_RELEASE_DIR="/Users/mrslimslim/.openclaw"
+RELEASE_DIR="${CTUNNEL_DIR:-${CODEPILOT_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}}"
+
+usage() {
+  cat <<EOF
+Usage:
+  ctunnel
+  ctunnel start [bridge_args...]
+  ctunnel preflight [preflight_args...]
+  ctunnel relay deploy [wrangler_args...]
+  ctunnel --help
+
+Commands:
+  start         Start the Codex tunnel bridge. This is the default command.
+  preflight     Run the automated release preflight checks.
+  relay deploy  Deploy the Cloudflare relay worker.
+
+Environment:
+  CTUNNEL_DIR   Override the bridge working directory.
+                Default: $RELEASE_DIR
+EOF
+}
+
+run_start() {
+  exec bash "$ROOT_DIR/scripts/release-bridge.sh" "$@"
+}
+
+run_preflight() {
+  exec bash "$ROOT_DIR/scripts/release-preflight.sh" "$@"
+}
+
+run_relay_deploy() {
+  cd "$ROOT_DIR/crates/codepilot-relay-worker"
+  exec npx wrangler deploy "$@"
+}
+
+if [[ $# -eq 0 ]]; then
+  run_start
+fi
+
+case "$1" in
+  --help|-h|help)
+    usage
+    exit 0
+    ;;
+  start)
+    shift
+    run_start "$@"
+    ;;
+  preflight)
+    shift
+    run_preflight "$@"
+    ;;
+  relay)
+    shift
+    case "${1:-}" in
+      deploy)
+        shift
+        run_relay_deploy "$@"
+        ;;
+      ""|--help|-h|help)
+        cat <<EOF
+Usage:
+  ctunnel relay deploy [wrangler_args...]
+EOF
+        exit 0
+        ;;
+      *)
+        echo "Unsupported relay subcommand: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    if [[ "$1" == -* ]]; then
+      run_start "$@"
+    fi
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

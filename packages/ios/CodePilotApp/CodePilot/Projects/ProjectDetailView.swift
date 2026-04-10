@@ -772,7 +772,7 @@ private struct RepairConnectionSheet: View {
                     .tint(CPTheme.accent)
 
                     VStack(spacing: 10) {
-                        TextField("codepilot://pair?...", text: $payloadInput, axis: .vertical)
+                        TextField("ctunnel://pair?...", text: $payloadInput, axis: .vertical)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .font(.system(.subheadline, design: .monospaced))

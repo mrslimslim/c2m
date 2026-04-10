@@ -7,6 +7,7 @@ public final class SessionDetailViewModel {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let fileSearchStore: FileSearchStore
     private let diffStore: DiffStore
     private let sessionIdOverride: String?
     private var detachedDraft: String = ""
@@ -16,6 +17,7 @@ public final class SessionDetailViewModel {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        fileSearchStore: FileSearchStore = FileSearchStore(),
         diffStore: DiffStore = DiffStore(),
         sessionId: String? = nil
     ) {
@@ -23,6 +25,7 @@ public final class SessionDetailViewModel {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.fileSearchStore = fileSearchStore
         self.diffStore = diffStore
         self.sessionIdOverride = sessionId
     }
@@ -110,6 +113,37 @@ public final class SessionDetailViewModel {
             return nil
         }
         return fileStore.fileState(for: path, sessionId: currentSessionId)
+    }
+
+    public var fileSearchState: FileSearchState? {
+        guard let currentSessionId else {
+            return nil
+        }
+        return fileSearchStore.state(for: currentSessionId)
+    }
+
+    public func searchFiles(query: String, limit: Int) throws {
+        guard let currentSessionId else {
+            return
+        }
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            fileSearchStore.clear(sessionId: currentSessionId)
+            return
+        }
+
+        fileSearchStore.markRequested(query: trimmedQuery, sessionId: currentSessionId)
+        do {
+            try sender.send(.fileSearchRequest(sessionId: currentSessionId, query: trimmedQuery, limit: limit))
+        } catch {
+            fileSearchStore.markFailed(
+                query: trimmedQuery,
+                sessionId: currentSessionId,
+                message: "Failed to search files."
+            )
+            throw error
+        }
     }
 
     public func requestDiff(eventId: Int) throws {

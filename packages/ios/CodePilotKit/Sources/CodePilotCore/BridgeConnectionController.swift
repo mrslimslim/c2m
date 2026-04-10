@@ -155,7 +155,9 @@ public final class BridgeConnectionController {
             try transport.open()
             let handshake = HandshakeMessage(phonePubkey: cryptoSession.publicKeyBase64, otp: config.otp)
             try transport.send(.handshake(handshake))
-            diagnostics.recordInfo("handshake sent")
+            diagnostics.recordInfo(
+                "handshake sent relay=\(config.isRelay) bridge=\(bridgeFingerprint(config.bridgePublicKey))"
+            )
         } catch {
             fail(reason: "transport_open_failed", terminal: true)
             throw BridgeConnectionControllerError.transport("transport_open_failed")
@@ -263,6 +265,9 @@ public final class BridgeConnectionController {
         negotiationPhase = .established
         waitingForLegacyAuth = false
         reconnectAttempts = 0
+        diagnostics.recordInfo(
+            "handshake_ok encrypted=\(message.encrypted) clientId=\(message.clientId ?? "nil") capabilities=\(currentCapabilities.sorted().joined(separator: ","))"
+        )
         if currentCapabilities.contains(BridgeCapability.sessionReplayV1) {
             diagnostics.recordInfo("capability:\(BridgeCapability.sessionReplayV1)")
         } else {
@@ -441,5 +446,11 @@ public final class BridgeConnectionController {
         return try controllerQueue.sync {
             try block()
         }
+    }
+
+    private func bridgeFingerprint(_ publicKey: String) -> String {
+        let prefix = publicKey.prefix(12)
+        let suffix = publicKey.suffix(6)
+        return "\(prefix)...\(suffix)"
     }
 }

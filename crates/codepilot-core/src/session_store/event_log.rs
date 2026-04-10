@@ -81,6 +81,7 @@ struct SessionIndexFile {
     aliases: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 pub struct SessionEventLogStore {
     work_dir: PathBuf,
     home_dir: Option<PathBuf>,
@@ -125,6 +126,22 @@ impl SessionEventLogStore {
         self.save_index_file(&index)?;
 
         Ok(persisted)
+    }
+
+    pub fn prepare_live_session(&self, session_id: &str) -> Result<()> {
+        let mut index = self.load_index_file()?;
+        let previous_canonical = self.resolve_canonical_session_id_from_index(&index, session_id);
+
+        if previous_canonical != session_id {
+            index.aliases.remove(session_id);
+            if let Some(entry) = index.sessions.get_mut(&previous_canonical) {
+                entry.alias_session_ids.retain(|alias| alias != session_id);
+            }
+        }
+
+        let entry = self.ensure_session_entry(&mut index, session_id)?;
+        index.sessions.insert(session_id.to_owned(), entry);
+        self.save_index_file(&index)
     }
 
     pub fn read_events_after(

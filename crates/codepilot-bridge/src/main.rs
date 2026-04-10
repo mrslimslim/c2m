@@ -7,7 +7,7 @@ use clap::Parser;
 use codepilot_agents::{claude::ClaudeAdapter, codex::CodexAdapter, types::AgentAdapter};
 use codepilot_bridge::{
     CliArgs,
-    bridge::{Bridge, BridgeOptions},
+    bridge::{Bridge, BridgeOptions, handle_runtime_message},
     transport::{
         local::{ConnectHandler, DisconnectHandler, LocalTransportServer, MessageHandler},
         types::TransportServer,
@@ -22,7 +22,7 @@ use codepilot_core::{
     slash::version::detect_adapter_version_with_default,
     tunnel::{StartTunnelOptions, start_tunnel},
 };
-use codepilot_protocol::{messages::BridgeMessage, state::AgentType};
+use codepilot_protocol::state::AgentType;
 use serde_json::{Value, json};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -39,7 +39,7 @@ async fn run(args: CliArgs) -> Result<(), String> {
 
     println!();
     println!("  +======================================+");
-    println!("  |   CodePilot Bridge v0.1.0             |");
+    println!("  |   CTunnel Bridge v0.1.0               |");
     println!("  |   Mobile AI Coding Command Center     |");
     println!("  +======================================+");
     println!();
@@ -50,7 +50,7 @@ async fn run(args: CliArgs) -> Result<(), String> {
     })
     .map_err(|error| error.to_string())?;
 
-    let (agent_type, adapter): (AgentType, Box<dyn AgentAdapter>) =
+    let (agent_type, adapter): (AgentType, Arc<dyn AgentAdapter>) =
         resolve_adapter(args.agent.as_str())?;
 
     LOG.info(&format!("Working directory: {}", work_dir.display()));
@@ -98,13 +98,7 @@ async fn run(args: CliArgs) -> Result<(), String> {
     let message_handler: MessageHandler = {
         let bridge = bridge.clone();
         Arc::new(move |client, message| {
-            if let Ok(mut bridge) = bridge.lock()
-                && let Err(error) = bridge.handle_message(client.clone(), message)
-            {
-                client.send(BridgeMessage::Error {
-                    message: error.to_string(),
-                });
-            }
+            handle_runtime_message(bridge.clone(), client, message);
         })
     };
 
@@ -154,15 +148,15 @@ async fn run(args: CliArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_adapter(agent: &str) -> Result<(AgentType, Box<dyn AgentAdapter>), String> {
+fn resolve_adapter(agent: &str) -> Result<(AgentType, Arc<dyn AgentAdapter>), String> {
     match agent {
-        "codex" => Ok((AgentType::Codex, Box::new(CodexAdapter::new()))),
-        "claude" => Ok((AgentType::Claude, Box::new(ClaudeAdapter::new()))),
+        "codex" => Ok((AgentType::Codex, Arc::new(CodexAdapter::new()))),
+        "claude" => Ok((AgentType::Claude, Arc::new(ClaudeAdapter::new()))),
         "auto" => {
             if command_available("codex") {
-                Ok((AgentType::Codex, Box::new(CodexAdapter::new())))
+                Ok((AgentType::Codex, Arc::new(CodexAdapter::new())))
             } else if command_available("claude") {
-                Ok((AgentType::Claude, Box::new(ClaudeAdapter::new())))
+                Ok((AgentType::Claude, Arc::new(ClaudeAdapter::new())))
             } else {
                 Err("Neither codex nor claude is available on PATH".to_owned())
             }
@@ -175,12 +169,7 @@ fn command_available(command: &str) -> bool {
     Command::new(command).arg("--version").output().is_ok()
 }
 
-fn override_pairing_endpoint(
-    payload: &Value,
-    host: &str,
-    port: u16,
-    tunnel: bool,
-) -> Value {
+fn override_pairing_endpoint(payload: &Value, host: &str, port: u16, tunnel: bool) -> Value {
     let mut payload = payload.as_object().cloned().unwrap_or_default();
     payload.insert("host".to_owned(), json!(host));
     payload.insert("port".to_owned(), json!(port));

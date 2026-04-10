@@ -37,17 +37,17 @@ impl std::error::Error for AgentError {}
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
-pub trait AgentAdapter: Send {
+pub trait AgentAdapter: Send + Sync {
     fn name(&self) -> AgentType;
-    fn start_session(&mut self, options: SessionOptions) -> Result<SessionInfo>;
+    fn start_session(&self, options: SessionOptions) -> Result<SessionInfo>;
     fn execute(
-        &mut self,
+        &self,
         session_id: &str,
         input: &str,
         on_event: &mut dyn FnMut(AgentEvent),
         options: Option<SessionOptions>,
     ) -> Result<()>;
-    fn resume_session(&mut self, session_id: &str) -> Result<SessionInfo>;
-    fn cancel(&mut self, session_id: &str) -> Result<()>;
-    fn delete_session(&mut self, session_id: &str) -> Result<()>;
+    fn resume_session(&self, session_id: &str) -> Result<SessionInfo>;
+    fn cancel(&self, session_id: &str) -> Result<()>;
+    fn delete_session(&self, session_id: &str) -> Result<()>;
 }

@@ -32,6 +32,8 @@ private struct ConnectionSlot {
     var summary: String = "Disconnected"
     var shouldBootstrapReplay: Bool = false
     var supportsSessionReplay: Bool = false
+    var reconnectBootstrapSeedSessionIDs: [String] = []
+    var confirmedSessionIDs: Set<String> = []
 }
 
 // MARK: - AppModel
@@ -55,6 +57,7 @@ final class AppModel: ObservableObject {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let fileSearchStore: FileSearchStore
     private let diffStore: DiffStore
     private let diagnosticsStore: DiagnosticsStore
     private let slashCatalogStore: SlashCatalogStore
@@ -85,6 +88,7 @@ final class AppModel: ObservableObject {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
+        let fileSearchStore = FileSearchStore()
         let diffStore = DiffStore()
         let diagnosticsStore = DiagnosticsStore()
         let slashCatalogStore = SlashCatalogStore()
@@ -118,6 +122,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
             diffStore: diffStore,
             diagnosticsStore: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
@@ -136,6 +141,9 @@ final class AppModel: ObservableObject {
 
         if let restoredConversationSnapshot {
             sessionToSlotID = restoredConversationSnapshot.sessionToConnectionID
+            diagnosticsStore.recordInfo(
+                "restored_snapshot sessions=\(Self.describeSessionIDs(restoredConversationSnapshot.sessionStore.sessions.map(\.id))) active=\(restoredConversationSnapshot.sessionStore.activeSessionId ?? "nil") mappings=\(Self.describeSessionMapping(restoredConversationSnapshot.sessionToConnectionID))"
+            )
             refreshPublishedState()
         }
 
@@ -158,6 +166,7 @@ final class AppModel: ObservableObject {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        fileSearchStore: FileSearchStore,
         diffStore: DiffStore,
         diagnosticsStore: DiagnosticsStore,
         slashCatalogStore: SlashCatalogStore,
@@ -176,6 +185,7 @@ final class AppModel: ObservableObject {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.fileSearchStore = fileSearchStore
         self.diffStore = diffStore
         self.diagnosticsStore = diagnosticsStore
         self.slashCatalogStore = slashCatalogStore
@@ -219,6 +229,7 @@ final class AppModel: ObservableObject {
         }
 
         _ = selectSavedConnection(id: id)
+        let restoredSessionIDs = knownSessionIDs(for: id)
         disconnectAllRuntimeConnections()
 
         let config = saved.config
@@ -231,6 +242,8 @@ final class AppModel: ObservableObject {
         }
 
         diagnosticsStore.recordInfo("[\(saved.name)] connecting: \(socketURL)")
+        diagnosticsStore.recordInfo("[\(saved.name)] connection_id: \(id)")
+        diagnosticsStore.recordInfo("[\(saved.name)] config: \(Self.describeConnectionConfig(config))")
         diagnosticsStore.recordInfo("[\(saved.name)] bridge_pubkey: \(config.bridgePublicKey.prefix(12))...")
         diagnosticsStore.recordInfo("[\(saved.name)] otp: \(config.otp)")
         timelineStore.appendSystem("connecting: \(socketURL)", sessionId: nil)
@@ -249,6 +262,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
             diffStore: diffStore,
             diagnostics: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
@@ -262,6 +276,7 @@ final class AppModel: ObservableObject {
             router: router,
             summary: "Connecting..."
         )
+        slot.reconnectBootstrapSeedSessionIDs = restoredSessionIDs
 
         let slotID = id
 
@@ -430,7 +445,7 @@ final class AppModel: ObservableObject {
             if sessionToSlotID[session.id] == connectionID {
                 return true
             }
-            return activeSlotID == connectionID && sessionToSlotID[session.id] == nil
+            return false
         }
     }
 
@@ -512,6 +527,11 @@ final class AppModel: ObservableObject {
         return fileStore.fileState(for: path, sessionId: resolvedSessionID)
     }
 
+    func fileSearchState(for sessionID: String) -> FileSearchState? {
+        let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
+        return fileSearchStore.state(for: resolvedSessionID)
+    }
+
     func makeSessionDetailViewModel(sessionID: String) -> SessionDetailViewModel {
         let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
         // Find the controller for this session's connection
@@ -532,6 +552,7 @@ final class AppModel: ObservableObject {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
             diffStore: diffStore,
             sessionId: resolvedSessionID
         )
@@ -649,15 +670,18 @@ final class AppModel: ObservableObject {
             slots[slotID]?.summary = "Disconnected"
             slots[slotID]?.shouldBootstrapReplay = false
             slots[slotID]?.supportsSessionReplay = false
+            slots[slotID]?.confirmedSessionIDs = []
             sessionReplayCoordinator.reset(for: slotID)
         case .connecting:
             slots[slotID]?.summary = "Connecting..."
             slots[slotID]?.shouldBootstrapReplay = false
             slots[slotID]?.supportsSessionReplay = false
+            slots[slotID]?.confirmedSessionIDs = []
         case .reconnecting:
             slots[slotID]?.summary = "Reconnecting..."
             slots[slotID]?.shouldBootstrapReplay = false
             slots[slotID]?.supportsSessionReplay = false
+            slots[slotID]?.confirmedSessionIDs = []
             sessionReplayCoordinator.reset(for: slotID)
         case let .connected(encrypted, clientId):
             let mode = encrypted ? "encrypted" : "plaintext"
@@ -687,21 +711,20 @@ final class AppModel: ObservableObject {
     private func handleSlotBridgeMessage(slotID: String, message: BridgeMessage) {
         guard let slot = slots[slotID] else { return }
         normalizeSessionToSlotMappings(for: slotID)
-        let previouslyMappedSessionIDs = knownSessionIDs(for: slotID)
-        let restoredSessionIDs = sessionStore.sessions.map(\.id)
-
-        slot.router.handle(message)
+        let confirmedSessionIDs = slots[slotID]?.confirmedSessionIDs ?? []
+        let previouslyMappedSessionIDs = Array(confirmedSessionIDs).sorted()
+        let restoredSessionIDs = slots[slotID]?.reconnectBootstrapSeedSessionIDs ?? sessionStore.sessions.map(\.id)
 
         switch message {
         case let .sessionList(sessions):
-            synchronizeSessionRemoval(
-                for: slotID,
-                previousSessionIDs: previouslyMappedSessionIDs,
-                incomingSessions: sessions
+            slot.router.handle(message)
+            diagnosticsStore.recordInfo(
+                "[\(slotID)] session_list incoming=\(Self.describeSessions(sessions)) prevMapped=\(Self.describeSessionIDs(previouslyMappedSessionIDs)) restored=\(Self.describeSessionIDs(restoredSessionIDs))"
             )
             for session in sessions {
                 sessionToSlotID[session.id] = slotID
             }
+            slots[slotID]?.confirmedSessionIDs = Set(sessions.map(\.id))
             normalizeSessionToSlotMappings(for: slotID)
             if let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
@@ -711,47 +734,83 @@ final class AppModel: ObservableObject {
                 applyPendingSessionResolution(resolution)
             }
             if slots[slotID]?.shouldBootstrapReplay == true {
+                let replaySessionIDs = SessionReplayBootstrapPlanner.sessionIDsForReconnect(
+                    restoredSessionIDs: restoredSessionIDs,
+                    previouslyMappedSessionIDs: previouslyMappedSessionIDs,
+                    currentMappedSessionIDs: knownSessionIDs(for: slotID)
+                ) { sessionID in
+                    sessionStore.resolvedSessionId(for: sessionID)
+                }
+                diagnosticsStore.recordInfo(
+                    "[\(slotID)] replay_bootstrap planned=\(Self.describeSessionIDs(replaySessionIDs)) currentMapped=\(Self.describeSessionIDs(knownSessionIDs(for: slotID)))"
+                )
                 requestReplayBootstrap(
                     for: slotID,
-                    sessionIDs: SessionReplayBootstrapPlanner.sessionIDsForReconnect(
-                        restoredSessionIDs: restoredSessionIDs,
-                        previouslyMappedSessionIDs: previouslyMappedSessionIDs,
-                        currentMappedSessionIDs: knownSessionIDs(for: slotID)
-                    ) { sessionID in
-                        sessionStore.resolvedSessionId(for: sessionID)
-                    }
+                    sessionIDs: replaySessionIDs
                 )
+                slots[slotID]?.reconnectBootstrapSeedSessionIDs = []
                 slots[slotID]?.shouldBootstrapReplay = false
             }
 
         case let .event(sessionId, _, _, _):
             let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
-            if let resolution = pendingSessionCoordinator.resolvePendingCommand(
+            let resolution = pendingSessionCoordinator.resolvePendingCommand(
                 for: slotID,
                 knownSessionIDs: previouslyMappedSessionIDs,
                 incomingEventSessionID: resolvedSessionID
-            ) {
+            )
+            if let resolution {
                 applyPendingSessionResolution(resolution)
             }
-            sessionToSlotID[resolvedSessionID] = slotID
+            let isConfirmedSession = confirmedSessionIDs.contains(resolvedSessionID)
+                || confirmedSessionIDs.contains(sessionId)
+            let isExpectedReplaySession = sessionReplayCoordinator.hasInFlightSync(for: slotID, sessionID: resolvedSessionID)
+                || sessionReplayCoordinator.hasInFlightSync(for: slotID, sessionID: sessionId)
+            let shouldBindEventSession = resolution != nil
+                || isConfirmedSession
+                || isExpectedReplaySession
+            if shouldBindEventSession {
+                slot.router.handle(message)
+                sessionToSlotID[resolvedSessionID] = slotID
+                diagnosticsStore.recordInfo("[\(slotID)] event mapped_session=\(resolvedSessionID)")
+            } else {
+                diagnosticsStore.recordInfo("[\(slotID)] ignored_unmapped_session=\(resolvedSessionID)")
+            }
 
         case let .sessionSyncComplete(sessionId, _, resolvedSessionId):
             let resolvedSessionID = resolvedSessionId ?? sessionId
-            sessionToSlotID[resolvedSessionID] = slotID
-            if resolvedSessionID != sessionId {
-                sessionToSlotID[sessionId] = nil
+            let isConfirmedSession = confirmedSessionIDs.contains(resolvedSessionID)
+                || confirmedSessionIDs.contains(sessionId)
+            let isExpectedReplaySession = sessionReplayCoordinator.hasInFlightSync(for: slotID, sessionID: resolvedSessionID)
+                || sessionReplayCoordinator.hasInFlightSync(for: slotID, sessionID: sessionId)
+            let shouldBindSyncedSession = isConfirmedSession
+                || isExpectedReplaySession
+            if shouldBindSyncedSession {
+                slot.router.handle(message)
+                sessionToSlotID[resolvedSessionID] = slotID
+                if resolvedSessionID != sessionId {
+                    sessionToSlotID[sessionId] = nil
+                }
+                slots[slotID]?.confirmedSessionIDs.insert(resolvedSessionID)
+                normalizeSessionToSlotMappings(for: slotID)
+                sessionReplayCoordinator.markSyncCompleted(
+                    for: slotID,
+                    sessionID: sessionId,
+                    resolvedSessionID: resolvedSessionId
+                )
+                diagnosticsStore.recordInfo(
+                    "[\(slotID)] session_sync_complete mapped original=\(sessionId) resolved=\(resolvedSessionID)"
+                )
+            } else {
+                diagnosticsStore.recordInfo("[\(slotID)] ignored_unmapped_sync_session=\(resolvedSessionID)")
             }
-            normalizeSessionToSlotMappings(for: slotID)
-            sessionReplayCoordinator.markSyncCompleted(
-                for: slotID,
-                sessionID: sessionId,
-                resolvedSessionID: resolvedSessionId
-            )
 
-        case let .error(message):
-            handleReplayProtocolErrorIfNeeded(slotID: slotID, message: message)
+        case let .error(errorMessage):
+            slot.router.handle(message)
+            handleReplayProtocolErrorIfNeeded(slotID: slotID, message: errorMessage)
 
-        case .fileContent, .diffContent, .diffHunksContent, .pong, .slashCatalog, .slashActionResult:
+        case .fileContent, .fileSearchResults, .diffContent, .diffHunksContent, .pong, .slashCatalog, .slashActionResult:
+            slot.router.handle(message)
             break
         }
 
@@ -865,6 +924,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        diagnosticsStore.recordInfo("[\(slotID)] request_replay_bootstrap sessions=\(Self.describeSessionIDs(sessionIDs))")
         let requests = sessionReplayCoordinator.enqueueReconnectSyncs(
             for: slotID,
             sessionIDs: sessionIDs
@@ -932,6 +992,9 @@ final class AppModel: ObservableObject {
     private func applyPendingSessionResolution(_ resolution: PendingSessionResolution) {
         let resolvedSessionID = sessionStore.resolvedSessionId(for: resolution.sessionID) ?? resolution.sessionID
         sessionToSlotID[resolvedSessionID] = resolution.connectionID
+        diagnosticsStore.recordInfo(
+            "[\(resolution.connectionID)] pending_resolution session=\(resolution.sessionID) resolved=\(resolvedSessionID) command=\(resolution.command.prefix(40))"
+        )
 
         let hasMatchingStarter = timelineStore.timeline(for: resolvedSessionID).contains { item in
             if case let .userCommand(text) = item.kind {
@@ -956,6 +1019,7 @@ final class AppModel: ObservableObject {
         }
 
         sessionStore.setActiveSession(id: resolvedSessionID)
+        diagnosticsStore.recordInfo("[\(resolution.connectionID)] active_session=\(resolvedSessionID)")
         setSessionNavigationTarget(sessionID: resolvedSessionID, for: resolution.connectionID)
     }
 
@@ -990,6 +1054,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func clearLocallyRestoredSessions(for connectionID: String) {
+        let restoredSessionIDs = knownSessionIDs(for: connectionID)
+        guard !restoredSessionIDs.isEmpty else {
+            return
+        }
+
+        diagnosticsStore.recordInfo(
+            "[\(connectionID)] clear_local_restore sessions=\(Self.describeSessionIDs(restoredSessionIDs))"
+        )
+        for sessionID in restoredSessionIDs {
+            removeSessionLocally(sessionID, connectionID: connectionID)
+        }
+    }
+
     private func removeSessionLocally(_ sessionID: String, connectionID: String? = nil) {
         let resolvedSessionID = sessionStore.resolvedSessionId(for: sessionID) ?? sessionID
         let targetConnectionID = connectionID ?? sessionToSlotID[resolvedSessionID] ?? sessionToSlotID[sessionID]
@@ -1015,9 +1093,13 @@ final class AppModel: ObservableObject {
             sessionToSlotID[knownSessionID] = nil
         }
 
+        diagnosticsStore.recordInfo(
+            "remove_session_local session=\(sessionID) resolved=\(resolvedSessionID) connection=\(targetConnectionID ?? "nil")"
+        )
         sessionStore.removeSession(id: resolvedSessionID)
         timelineStore.removeSessionTimeline(sessionId: resolvedSessionID)
         fileStore.removeSessionState(sessionId: resolvedSessionID)
+        fileSearchStore.removeSessionState(sessionId: resolvedSessionID)
 
         if shouldClearNavigationTarget, let targetConnectionID {
             clearSessionNavigationTarget(for: targetConnectionID)
@@ -1076,6 +1158,49 @@ final class AppModel: ObservableObject {
             ),
         ]
     }
+
+    private static func describeConnectionConfig(_ config: ConnectionConfig) -> String {
+        switch config {
+        case let .lan(host, port, token, bridgePublicKey, _):
+            let tokenState = token.isEmpty ? "none" : "present"
+            return "lan host=\(host) port=\(port) token=\(tokenState) bridge=\(describeKey(bridgePublicKey))"
+        case let .relay(url, channel, bridgePublicKey, _):
+            return "relay url=\(url) channel=\(channel) bridge=\(describeKey(bridgePublicKey))"
+        }
+    }
+
+    private static func describeSessions(_ sessions: [SessionInfo]) -> String {
+        if sessions.isEmpty {
+            return "[]"
+        }
+
+        let parts = sessions.map { session in
+            "\(session.id){state=\(session.state.rawValue),updated=\(session.lastActiveAt)}"
+        }
+        return "[\(parts.joined(separator: ","))]"
+    }
+
+    private static func describeSessionIDs(_ sessionIDs: [String]) -> String {
+        if sessionIDs.isEmpty {
+            return "[]"
+        }
+        return "[\(sessionIDs.sorted().joined(separator: ","))]"
+    }
+
+    private static func describeSessionMapping(_ mapping: [String: String]) -> String {
+        if mapping.isEmpty {
+            return "[]"
+        }
+
+        let parts = mapping
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)->\($0.value)" }
+        return "[\(parts.joined(separator: ","))]"
+    }
+
+    private static func describeKey(_ value: String) -> String {
+        "\(value.prefix(12))...\(value.suffix(6))"
+    }
 }
 
 // MARK: - Errors
@@ -1112,6 +1237,7 @@ extension AppModel {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
         let fileStore = FileStore()
+        let fileSearchStore = FileSearchStore()
         let diffStore = DiffStore()
         let diagnosticsStore = DiagnosticsStore()
         let slashCatalogStore = SlashCatalogStore()
@@ -1136,6 +1262,7 @@ extension AppModel {
             sessionStore: sessionStore,
             timelineStore: timelineStore,
             fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
             diffStore: diffStore,
             diagnosticsStore: diagnosticsStore,
             slashCatalogStore: slashCatalogStore,
@@ -1228,7 +1355,7 @@ enum AppPreviewFixtures {
 
     static let previewFile = FileState(
         path: "/Users/tengyu/Development/c2m/README.md",
-        content: "# CodePilot iOS Preview\n\nThis file is shown inside the SwiftUI Canvas preview.",
+        content: "# CTunnel iOS Preview\n\nThis file is shown inside the SwiftUI Canvas preview.",
         language: "markdown",
         isLoading: false
     )
@@ -1273,7 +1400,7 @@ enum AppPreviewFixtures {
         timelineStore.appendBridgeEvent(
             sessionId: primarySessionID,
             event: .commandExec(
-                command: "xcodebuild -scheme CodePilot build",
+                command: "xcodebuild -scheme CTunnel build",
                 output: "BUILD SUCCEEDED",
                 exitCode: 0,
                 status: .done

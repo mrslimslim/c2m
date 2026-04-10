@@ -89,6 +89,32 @@ final class SessionReplayCoordinatorTests: XCTestCase {
         )
     }
 
+    func testHasInFlightSyncTracksReplayBootstrapSessionsUntilCompletion() {
+        let coordinator = SessionReplayCoordinator()
+
+        XCTAssertEqual(
+            coordinator.enqueueReconnectSyncs(
+                for: "connection-1",
+                sessionIDs: ["session-1"]
+            ) { _ in
+                0
+            },
+            [
+                .init(connectionID: "connection-1", sessionID: "session-1", afterEventId: 0),
+            ]
+        )
+        XCTAssertTrue(coordinator.hasInFlightSync(for: "connection-1", sessionID: "session-1"))
+
+        coordinator.markSyncCompleted(
+            for: "connection-1",
+            sessionID: "session-1",
+            resolvedSessionID: "stable-session-1"
+        )
+
+        XCTAssertFalse(coordinator.hasInFlightSync(for: "connection-1", sessionID: "session-1"))
+        XCTAssertFalse(coordinator.hasInFlightSync(for: "connection-1", sessionID: "stable-session-1"))
+    }
+
     func testRestoredTemporarySessionCanReplayMissingEventsAfterSessionListRemap() {
         let originalSessionStore = SessionStore()
         let originalTimelineStore = TimelineStore()

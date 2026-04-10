@@ -4,13 +4,17 @@ use crate::{
 };
 use codepilot_protocol::{
     events::AgentEvent,
-    state::{DiffFile, DiffHunk, FileChange},
+    state::{DiffFile, DiffHunk, FileChange, FileChangeKind},
 };
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
+    fs,
+    path::Path,
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const DEFAULT_CACHE_TTL_MS: i64 = 15_000;
@@ -84,6 +88,23 @@ pub struct DiffService {
 }
 
 impl DiffService {
+    pub fn new_with_default_loader(
+        work_dir: PathBuf,
+        event_store: Arc<SessionEventLogStore>,
+    ) -> Self {
+        let loader_work_dir = work_dir.clone();
+        Self::new(DiffServiceOptions {
+            work_dir,
+            event_store,
+            cache_ttl_ms: DEFAULT_CACHE_TTL_MS,
+            hunk_page_size: DEFAULT_HUNK_PAGE_SIZE,
+            load_diff_text: Arc::new(move |change| {
+                load_diff_text_from_git(&loader_work_dir, change)
+            }),
+            now: Arc::new(now_ms),
+        })
+    }
+
     pub fn new(options: DiffServiceOptions) -> Self {
         Self {
             event_store: options.event_store,
@@ -253,4 +274,50 @@ impl DiffService {
             hunks,
         }
     }
+}
+
+fn load_diff_text_from_git(work_dir: &Path, change: &FileChange) -> Result<String> {
+    let absolute_path = work_dir.join(&change.path);
+    if matches!(change.kind, FileChangeKind::Add) {
+        if fs::metadata(&absolute_path).is_err() {
+            return Ok(String::new());
+        }
+        return run_git(
+            work_dir,
+            &[
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-color",
+                "--",
+                "/dev/null",
+                absolute_path.to_string_lossy().as_ref(),
+            ],
+        );
+    }
+
+    run_git(
+        work_dir,
+        &["diff", "--no-ext-diff", "--no-color", "--relative", "--", &change.path],
+    )
+}
+
+fn run_git(work_dir: &Path, args: &[&str]) -> Result<String> {
+    let output = match Command::new("git").args(args).current_dir(work_dir).output() {
+        Ok(output) => output,
+        Err(_) => return Ok(String::new()),
+    };
+
+    if output.status.success() || output.status.code() == Some(1) {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+
+    Ok(String::new())
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }

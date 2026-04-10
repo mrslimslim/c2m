@@ -97,3 +97,39 @@ fn alias_remap_persists_and_resolves_to_the_canonical_session_id() {
     assert_eq!(replay.len(), 1);
     assert_eq!(replay[0].session_id, "real-session");
 }
+
+#[test]
+fn prepare_live_session_detaches_a_reused_alias_from_previous_history() {
+    let home_dir = unique_temp_dir("codepilot-home");
+    let work_dir = unique_temp_dir("codepilot-work");
+    fs::create_dir_all(&home_dir).unwrap();
+    fs::create_dir_all(&work_dir).unwrap();
+
+    let store = SessionEventLogStore::new(SessionEventLogStoreOptions {
+        work_dir: work_dir.clone(),
+        home_dir: Some(home_dir.clone()),
+    });
+    store
+        .append_event("real-session", 1000, thinking_event("old"))
+        .unwrap();
+    store
+        .remap_session_alias("temp-session", "real-session")
+        .unwrap();
+
+    store.prepare_live_session("temp-session").unwrap();
+    store
+        .append_event("temp-session", 1001, thinking_event("new"))
+        .unwrap();
+
+    assert_eq!(store.resolve_session_id("temp-session").unwrap(), "temp-session");
+
+    let temp_replay = store.read_events_after("temp-session", 0).unwrap();
+    assert_eq!(temp_replay.len(), 1);
+    assert_eq!(temp_replay[0].session_id, "temp-session");
+    assert_eq!(temp_replay[0].event, thinking_event("new"));
+
+    let canonical_replay = store.read_events_after("real-session", 0).unwrap();
+    assert_eq!(canonical_replay.len(), 1);
+    assert_eq!(canonical_replay[0].session_id, "real-session");
+    assert_eq!(canonical_replay[0].event, thinking_event("old"));
+}

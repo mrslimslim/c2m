@@ -113,6 +113,59 @@ final class SessionComposerLayoutSourceTests: XCTestCase {
         )
     }
 
+    func testSessionDetailSourceIncludesComposerFileChipsAndSessionSwitcher() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("SessionSwitcherSheet("),
+            "Session detail should present a searchable session switcher from the header."
+        )
+        XCTAssertTrue(
+            source.contains("ComposerFileChipRow("),
+            "Session detail should render selected file chips above the composer input."
+        )
+        XCTAssertTrue(
+            source.contains("onTapGesture") && source.contains("showSessionSwitcher = true"),
+            "The conversation header should open the session switcher."
+        )
+    }
+
+    func testSessionDetailSourceOmitsSpeechControls() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
+        )
+
+        XCTAssertFalse(
+            source.contains("PressToTalkButton("),
+            "Session detail should not show a press-to-talk control in the composer row."
+        )
+        XCTAssertFalse(
+            source.contains("SpeechTranscriber"),
+            "Session detail should not keep the speech transcriber wired into the composer."
+        )
+    }
+
+    func testSessionDetailSourceDebouncesFileSearchRequests() throws {
+        let source = try loadAppSource(
+            at: "../CodePilotApp/CodePilot/Sessions/SessionDetailView.swift"
+        )
+
+        XCTAssertTrue(
+            source.contains("@State private var pendingFileSearchTask: Task<Void, Never>?"),
+            "The session composer should track a cancellable pending file-search task so rapid typing does not flood the bridge."
+        )
+        XCTAssertTrue(
+            source.contains("pendingFileSearchTask?.cancel()"),
+            "The session composer should cancel stale file-search work when the query changes."
+        )
+        XCTAssertTrue(
+            source.contains("Task.sleep(for: .milliseconds(180))"),
+            "The session composer should debounce bridge-backed file-search requests before sending them."
+        )
+    }
+
     func testDiffViewerSourceUsesLazySectionsAndIncrementalHunkActions() throws {
         let source = try loadAppSource(
             at: "../CodePilotApp/CodePilot/Files/DiffViewerView.swift"

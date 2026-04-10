@@ -21,7 +21,7 @@ final class ConnectionsViewModelTests: XCTestCase {
     }
 
     func testParsePayloadPrefersRelayModeAndNormalizesRelayURL() throws {
-        let payload = "codepilot://pair?relay=wss%3A%2F%2Frelay.example.com%2F&channel=alpha-123&bridge_pubkey=bridge-key&otp=123456"
+        let payload = "ctunnel://pair?relay=wss%3A%2F%2Frelay.example.com%2F&channel=alpha-123&bridge_pubkey=bridge-key&otp=123456"
 
         let config = try ConnectionPayloadParser.parse(payload)
 

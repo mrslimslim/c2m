@@ -41,7 +41,7 @@ pub enum AgentEvent {
         summary: String,
         #[serde(rename = "filesChanged")]
         files_changed: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         usage: Option<TokenUsage>,
     },
 }

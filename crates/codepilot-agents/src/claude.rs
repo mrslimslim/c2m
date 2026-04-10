@@ -2,8 +2,12 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{BufRead, BufReader, Read},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use codepilot_protocol::{
@@ -52,37 +56,59 @@ struct ActiveSession {
     running_child: Option<Arc<Mutex<Child>>>,
 }
 
-pub struct ClaudeAdapter {
+#[derive(Debug, Default)]
+struct ClaudeState {
     sessions: HashMap<String, ActiveSession>,
-    counter: u64,
+}
+
+pub struct ClaudeAdapter {
+    state: Mutex<ClaudeState>,
+    counter: AtomicU64,
 }
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::new(),
-            counter: 0,
+            state: Mutex::new(ClaudeState::default()),
+            counter: AtomicU64::new(0),
         }
     }
 
+    fn next_session_identity(&self) -> (String, i64) {
+        let now = Self::now_ms();
+        let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        (
+            format!("claude-{now}-{seq:06x}"),
+            now,
+        )
+    }
+
     pub fn last_session_id(&self, session_id: &str) -> Option<String> {
-        self.sessions
+        self.state
+            .lock()
+            .ok()?
+            .sessions
             .get(session_id)
             .and_then(|session| session.last_session_id.clone())
     }
 
     pub fn consume_events(
-        &mut self,
+        &self,
         session_id: &str,
         events: Vec<ClaudeStreamEvent>,
     ) -> Result<Vec<AgentEvent>> {
-        let session = self
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock claude adapter state"))?;
+        let session = state
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
 
         let mut mapped = Vec::new();
         for event in events {
+            session.info.last_active_at = Self::now_ms();
             match event {
                 ClaudeStreamEvent::Assistant { content } => {
                     for block in content {
@@ -260,6 +286,13 @@ impl ClaudeAdapter {
             ),
         }
     }
+
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0)
+    }
 }
 
 fn parse_object_map(value: Value) -> BTreeMap<String, Value> {
@@ -282,18 +315,21 @@ impl AgentAdapter for ClaudeAdapter {
         AgentType::Claude
     }
 
-    fn start_session(&mut self, options: SessionOptions) -> Result<SessionInfo> {
-        self.counter += 1;
-        let id = format!("claude-{}", self.counter);
+    fn start_session(&self, options: SessionOptions) -> Result<SessionInfo> {
+        let (id, now) = self.next_session_identity();
         let info = SessionInfo {
             id: id.clone(),
             agent_type: AgentType::Claude,
             work_dir: options.work_dir.to_string_lossy().into_owned(),
             state: AgentState::Idle,
-            created_at: self.counter as i64,
-            last_active_at: self.counter as i64,
+            created_at: now,
+            last_active_at: now,
         };
-        self.sessions.insert(
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock claude adapter state"))?;
+        state.sessions.insert(
             id.clone(),
             ActiveSession {
                 info: info.clone(),
@@ -305,17 +341,25 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn execute(
-        &mut self,
+        &self,
         session_id: &str,
         input: &str,
         on_event: &mut dyn FnMut(AgentEvent),
         _options: Option<SessionOptions>,
     ) -> Result<()> {
-        let session = self
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        session.info.state = AgentState::Thinking;
+        let (work_dir, last_session_id) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock claude adapter state"))?;
+            let session = state
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+            session.info.state = AgentState::Thinking;
+            session.info.last_active_at = Self::now_ms();
+            (session.info.work_dir.clone(), session.last_session_id.clone())
+        };
 
         let mut args = vec![
             "-p".to_owned(),
@@ -324,7 +368,7 @@ impl AgentAdapter for ClaudeAdapter {
             "--permission-mode".to_owned(),
             "acceptEdits".to_owned(),
         ];
-        if let Some(last_session_id) = &session.last_session_id {
+        if let Some(last_session_id) = &last_session_id {
             args.push("-r".to_owned());
             args.push(last_session_id.clone());
         }
@@ -332,7 +376,7 @@ impl AgentAdapter for ClaudeAdapter {
 
         let mut command = Command::new("claude");
         command.args(args);
-        command.current_dir(&session.info.work_dir);
+        command.current_dir(&work_dir);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -352,7 +396,11 @@ impl AgentAdapter for ClaudeAdapter {
             .ok_or_else(|| AgentError::new("claude child process has no stderr"))?;
 
         let child_ref = Arc::new(Mutex::new(child));
-        session.running_child = Some(child_ref.clone());
+        if let Ok(mut state) = self.state.lock()
+            && let Some(session) = state.sessions.get_mut(session_id)
+        {
+            session.running_child = Some(child_ref.clone());
+        }
 
         let stderr_reader = thread::spawn(move || {
             let mut stderr_output = String::new();
@@ -394,13 +442,16 @@ impl AgentAdapter for ClaudeAdapter {
             .map_err(|error| AgentError::new(error.to_string()))?;
         let stderr_output = stderr_reader.join().unwrap_or_default();
 
-        if let Some(session) = self.sessions.get_mut(session_id) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(session) = state.sessions.get_mut(session_id)
+        {
             session.running_child = None;
             session.info.state = if status.success() {
                 AgentState::Idle
             } else {
                 AgentState::Error
             };
+            session.info.last_active_at = Self::now_ms();
         }
 
         if !status.success() {
@@ -423,29 +474,43 @@ impl AgentAdapter for ClaudeAdapter {
         Ok(())
     }
 
-    fn resume_session(&mut self, session_id: &str) -> Result<SessionInfo> {
-        self.sessions
+    fn resume_session(&self, session_id: &str) -> Result<SessionInfo> {
+        self.state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock claude adapter state"))?
+            .sessions
             .get(session_id)
             .map(|session| session.info.clone())
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))
     }
 
-    fn cancel(&mut self, session_id: &str) -> Result<()> {
-        let session = self
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        if let Some(child) = session.running_child.take()
+    fn cancel(&self, session_id: &str) -> Result<()> {
+        let child = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock claude adapter state"))?;
+            let session = state
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+            session.info.state = AgentState::Idle;
+            session.info.last_active_at = Self::now_ms();
+            session.running_child.take()
+        };
+        if let Some(child) = child
             && let Ok(mut child) = child.lock()
         {
             let _ = child.kill();
         }
-        session.info.state = AgentState::Idle;
         Ok(())
     }
 
-    fn delete_session(&mut self, session_id: &str) -> Result<()> {
+    fn delete_session(&self, session_id: &str) -> Result<()> {
         let session = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock claude adapter state"))?
             .sessions
             .remove(session_id)
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;

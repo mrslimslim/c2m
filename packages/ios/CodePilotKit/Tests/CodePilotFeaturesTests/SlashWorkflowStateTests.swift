@@ -12,14 +12,20 @@ final class SlashWorkflowStateTests: XCTestCase {
             config: .init(model: "gpt-5.4", modelReasoningEffort: "medium")
         )
         XCTAssertEqual(rootProjection?.title, "Commands")
-        XCTAssertEqual(rootProjection?.entries.map { $0.id }, ["model", "permissions", "review", "new"])
-        XCTAssertEqual(rootProjection?.entries.first(where: { $0.id == "review" })?.isEnabled, false)
+        XCTAssertEqual(rootProjection?.entries.map { $0.id }, ["model", "permissions", "new"])
+        XCTAssertNil(rootProjection?.entries.first(where: { $0.id == "review" }))
 
         let filteredProjection = state.projection(
             query: "/m",
             config: .init(model: "gpt-5.4", modelReasoningEffort: "medium")
         )
         XCTAssertEqual(filteredProjection?.entries.map { $0.id }, ["model"])
+
+        let disabledProjection = state.projection(
+            query: "/review",
+            config: .init(model: "gpt-5.4", modelReasoningEffort: "medium")
+        )
+        XCTAssertNil(disabledProjection)
 
         let modelProjection = state.projection(
             query: "/model",

@@ -6,9 +6,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(
-    name = "codepilot",
+    name = "ctunnel",
     version = "0.1.0",
-    about = "Mobile command center for AI coding agents via Cloudflare Tunnel"
+    about = "CTunnel bridge for AI coding agents via Cloudflare Tunnel"
 )]
 pub struct CliArgs {
     #[arg(long, default_value = "auto")]

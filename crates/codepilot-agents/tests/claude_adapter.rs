@@ -22,7 +22,7 @@ fn session_options() -> SessionOptions {
 
 #[test]
 fn claude_adapter_maps_assistant_blocks_and_result_payloads() {
-    let mut adapter = ClaudeAdapter::new();
+    let adapter = ClaudeAdapter::new();
     let session = adapter.start_session(session_options()).unwrap();
 
     let events = adapter
@@ -63,7 +63,7 @@ fn claude_adapter_maps_assistant_blocks_and_result_payloads() {
 
 #[test]
 fn claude_adapter_maps_tool_use_and_tool_result_events_and_supports_cancellation() {
-    let mut adapter = ClaudeAdapter::new();
+    let adapter = ClaudeAdapter::new();
     let session = adapter.start_session(session_options()).unwrap();
 
     let mut bash_input = BTreeMap::new();
@@ -108,4 +108,46 @@ fn claude_adapter_maps_tool_use_and_tool_result_events_and_supports_cancellation
     adapter.cancel(&session.id).unwrap();
     adapter.delete_session(&session.id).unwrap();
     assert!(adapter.resume_session(&session.id).is_err());
+}
+
+#[test]
+fn claude_adapter_start_session_uses_epoch_millisecond_timestamps() {
+    let adapter = ClaudeAdapter::new();
+    let session = adapter.start_session(session_options()).unwrap();
+
+    assert!(
+        session.created_at > 1_700_000_000_000_i64,
+        "created_at should be a real epoch-millisecond timestamp, got {}",
+        session.created_at
+    );
+    assert!(
+        session.last_active_at >= session.created_at,
+        "last_active_at should be initialized from the same wall clock, got created_at={} last_active_at={}",
+        session.created_at,
+        session.last_active_at
+    );
+}
+
+#[test]
+fn claude_adapter_generates_unique_temp_ids_with_timestamp_sequence() {
+    let adapter = ClaudeAdapter::new();
+    let first = adapter.start_session(session_options()).unwrap();
+    let second = adapter.start_session(session_options()).unwrap();
+
+    assert!(first.id.starts_with("claude-"));
+    assert!(second.id.starts_with("claude-"));
+    assert_ne!(first.id, second.id);
+
+    let first_parts = first.id.split('-').collect::<Vec<_>>();
+    let second_parts = second.id.split('-').collect::<Vec<_>>();
+    assert_eq!(first_parts.len(), 3);
+    assert_eq!(second_parts.len(), 3);
+
+    let first_ts = first_parts[1].parse::<i64>().unwrap();
+    let second_ts = second_parts[1].parse::<i64>().unwrap();
+    assert!(second_ts >= first_ts);
+
+    let first_seq = i64::from_str_radix(first_parts[2], 16).unwrap();
+    let second_seq = i64::from_str_radix(second_parts[2], 16).unwrap();
+    assert_eq!(second_seq, first_seq + 1);
 }

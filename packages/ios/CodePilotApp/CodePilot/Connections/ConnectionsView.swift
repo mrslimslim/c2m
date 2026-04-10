@@ -27,7 +27,7 @@ struct ConnectionsView: View {
             Form {
                 // MARK: - Pairing Payload
                 Section {
-                    TextField("codepilot://pair?... or JSON payload", text: $payloadInput, axis: .vertical)
+                    TextField("ctunnel://pair?... or JSON payload", text: $payloadInput, axis: .vertical)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
 

@@ -188,6 +188,53 @@ final class SessionRoutingTests: XCTestCase {
         XCTAssertNil(diffStore.state(for: "session-1", eventId: 42)?.files.first?.nextHunkIndex)
     }
 
+    func testRouterRoutesFileSearchResultsToStore() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let fileSearchStore = FileSearchStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .coding, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(
+            .fileSearchResults(
+                sessionId: session.id,
+                query: "turnview",
+                results: [
+                    .init(
+                        path: "Sources/TurnView.swift",
+                        displayName: "TurnView.swift",
+                        directoryHint: "Sources"
+                    )
+                ]
+            )
+        )
+
+        XCTAssertEqual(
+            fileSearchStore.state(for: session.id),
+            .init(
+                query: "turnview",
+                results: [
+                    .init(
+                        path: "Sources/TurnView.swift",
+                        displayName: "TurnView.swift",
+                        directoryHint: "Sources"
+                    )
+                ],
+                isLoading: false,
+                errorMessage: nil
+            )
+        )
+    }
+
     func testSessionSyncCompleteResolvedSessionIDMigratesReplayState() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
@@ -318,6 +365,62 @@ final class SessionRoutingTests: XCTestCase {
             "hello"
         )
         XCTAssertNil(fileStore.fileState(for: "README.md", sessionId: temporarySession.id))
+    }
+
+    func testIncomingConcreteSessionIdDoesNotReusePersistedAliasReplayCursor() {
+        let originalStore = SessionStore()
+        let oldSession = makeSession(
+            id: "old-real-session",
+            state: .idle,
+            createdAt: 1_700_000_100,
+            lastActiveAt: 1_700_000_101
+        )
+        originalStore.upsert(oldSession)
+        _ = originalStore.applySessionRemap(from: "codex-2", to: oldSession.id)
+        originalStore.recordAppliedEventID(6, for: oldSession.id)
+
+        let sessionStore = SessionStore()
+        sessionStore.restore(from: originalStore.snapshot())
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+
+        let freshSession = makeSession(
+            id: "codex-2",
+            state: .thinking,
+            createdAt: 1_700_000_300,
+            lastActiveAt: 1_700_000_301
+        )
+        router.handle(.sessionList(sessions: [freshSession]))
+
+        var replayRequests: [(String, Int)] = []
+        router.onReplayNeeded = { sessionID, afterEventId in
+            replayRequests.append((sessionID, afterEventId))
+        }
+
+        router.handle(
+            .event(
+                sessionId: freshSession.id,
+                event: .status(state: .thinking, message: "fresh"),
+                eventId: 1,
+                timestamp: 1
+            )
+        )
+
+        XCTAssertEqual(sessionStore.resolvedSessionId(for: freshSession.id), freshSession.id)
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: freshSession.id), 1)
+        XCTAssertEqual(sessionStore.lastAppliedEventID(for: oldSession.id), 6)
+        XCTAssertEqual(replayRequests.map { "\($0.0):\($0.1)" }, [])
+        XCTAssertEqual(
+            timelineStore.timeline(for: freshSession.id).map(\.kind),
+            [.status(state: .thinking, message: "fresh")]
+        )
     }
 
     func testPlaceholderSessionRemapMigratesTimelineDraftFileAndActiveSelection() {

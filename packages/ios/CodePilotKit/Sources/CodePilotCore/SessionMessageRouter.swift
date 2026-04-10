@@ -7,6 +7,7 @@ public final class SessionMessageRouter {
     private let sessionStore: SessionStore
     private let timelineStore: TimelineStore
     private let fileStore: FileStore
+    private let fileSearchStore: FileSearchStore
     private let diffStore: DiffStore
     private let diagnostics: DiagnosticsStore
     private let slashCatalogStore: SlashCatalogStore?
@@ -16,6 +17,7 @@ public final class SessionMessageRouter {
         sessionStore: SessionStore,
         timelineStore: TimelineStore,
         fileStore: FileStore,
+        fileSearchStore: FileSearchStore = FileSearchStore(),
         diffStore: DiffStore = DiffStore(),
         diagnostics: DiagnosticsStore,
         slashCatalogStore: SlashCatalogStore? = nil,
@@ -24,6 +26,7 @@ public final class SessionMessageRouter {
         self.sessionStore = sessionStore
         self.timelineStore = timelineStore
         self.fileStore = fileStore
+        self.fileSearchStore = fileSearchStore
         self.diffStore = diffStore
         self.diagnostics = diagnostics
         self.slashCatalogStore = slashCatalogStore
@@ -37,6 +40,7 @@ public final class SessionMessageRouter {
             for remap in remaps {
                 timelineStore.migrateSessionTimeline(from: remap.from, to: remap.to)
                 fileStore.migrateSessionState(from: remap.from, to: remap.to)
+                fileSearchStore.migrateSessionState(from: remap.from, to: remap.to)
                 diffStore.migrateSessionState(from: remap.from, to: remap.to)
                 diagnostics.recordInfo("session_remap:\(remap.from)->\(remap.to)")
             }
@@ -85,7 +89,8 @@ public final class SessionMessageRouter {
             diagnostics.recordInfo("file_content:\(path)")
 
         case let .fileSearchResults(sessionId, query, results):
-            // Task 1 contract plumbing only: acknowledge the message for exhaustiveness.
+            let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            fileSearchStore.routeResults(sessionId: targetSessionId, query: query, results: results)
             diagnostics.recordInfo("file_search_results:\(sessionId):\(query):\(results.count)")
 
         case let .diffContent(sessionId, eventId, files):
@@ -117,6 +122,7 @@ public final class SessionMessageRouter {
                 let remap = sessionStore.applySessionRemap(from: sessionId, to: resolvedSessionId)
                 timelineStore.migrateSessionTimeline(from: remap.from, to: remap.to)
                 fileStore.migrateSessionState(from: remap.from, to: remap.to)
+                fileSearchStore.migrateSessionState(from: remap.from, to: remap.to)
                 diffStore.migrateSessionState(from: remap.from, to: remap.to)
                 diagnostics.recordInfo("session_sync_remap:\(remap.from)->\(remap.to)")
             }

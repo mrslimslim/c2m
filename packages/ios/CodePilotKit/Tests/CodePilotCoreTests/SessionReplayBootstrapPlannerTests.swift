@@ -2,7 +2,28 @@ import XCTest
 @testable import CodePilotCore
 
 final class SessionReplayBootstrapPlannerTests: XCTestCase {
-    func testReconnectBootstrapKeepsRestoredSessionsWhenConnectionMappingWasLost() {
+    func testReconnectBootstrapReplaysRestoredSessionsWhenBridgeStartsEmpty() {
+        let sessionIDs = SessionReplayBootstrapPlanner.sessionIDsForReconnect(
+            restoredSessionIDs: ["restored-session", "temp-session"],
+            previouslyMappedSessionIDs: [],
+            currentMappedSessionIDs: []
+        ) { sessionID in
+            switch sessionID {
+            case "temp-session":
+                "stable-session"
+            default:
+                sessionID
+            }
+        }
+
+        XCTAssertEqual(
+            sessionIDs,
+            ["restored-session", "stable-session"],
+            "replay bootstrap should recover locally restored sessions when the bridge reconnects without any live session list"
+        )
+    }
+
+    func testReconnectBootstrapReplaysRestoredSessionsThatBridgeStillLists() {
         let sessionIDs = SessionReplayBootstrapPlanner.sessionIDsForReconnect(
             restoredSessionIDs: ["restored-session"],
             previouslyMappedSessionIDs: [],
@@ -14,7 +35,7 @@ final class SessionReplayBootstrapPlannerTests: XCTestCase {
         XCTAssertEqual(
             sessionIDs,
             ["restored-session"],
-            "replay bootstrap should recover sessions we restored locally without replaying unseen sessions"
+            "replay bootstrap should recover the restored session when the bridge still lists it after reconnect"
         )
     }
 

@@ -213,6 +213,36 @@ final class SessionDetailViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.diffState(for: 42)?.isLoading, true)
     }
 
+    func testSearchFilesMarksLoadingAndSendsFileSearchRequest() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let fileSearchStore = FileSearchStore()
+        let session = makeSession(id: "session-1", state: .coding)
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            fileSearchStore: fileSearchStore
+        )
+
+        try viewModel.searchFiles(query: "turnview", limit: 12)
+
+        XCTAssertEqual(
+            sender.messages,
+            [.fileSearchRequest(sessionId: session.id, query: "turnview", limit: 12)]
+        )
+        XCTAssertEqual(
+            viewModel.fileSearchState,
+            .init(query: "turnview", results: [], isLoading: true, errorMessage: nil)
+        )
+    }
+
     func testRequestMoreDiffHunksAppendsReturnedHunks() throws {
         let sender = MockPhoneMessageSender()
         let sessionStore = SessionStore()

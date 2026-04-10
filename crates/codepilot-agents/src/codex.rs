@@ -2,8 +2,12 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use codepilot_protocol::{
@@ -88,43 +92,62 @@ struct ActiveSession {
     running_child: Option<Arc<Mutex<Child>>>,
 }
 
-pub struct CodexAdapter {
+#[derive(Debug, Default)]
+struct CodexState {
     sessions: HashMap<String, ActiveSession>,
     aliases: HashMap<String, String>,
-    counter: u64,
+}
+
+pub struct CodexAdapter {
+    state: Mutex<CodexState>,
+    counter: AtomicU64,
 }
 
 impl CodexAdapter {
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::new(),
-            aliases: HashMap::new(),
-            counter: 0,
+            state: Mutex::new(CodexState::default()),
+            counter: AtomicU64::new(0),
         }
     }
 
+    fn next_session_identity(&self) -> (String, i64) {
+        let now = Self::now_ms();
+        let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
+        (
+            format!("codex-{now}-{seq:06x}"),
+            now,
+        )
+    }
+
     pub fn canonical_session_id(&self, session_id: &str) -> Option<String> {
+        let state = self.state.lock().ok()?;
+        Self::canonical_session_id_locked(&state, session_id)
+    }
+
+    fn canonical_session_id_locked(state: &CodexState, session_id: &str) -> Option<String> {
         let mut current = session_id;
-        while let Some(next) = self.aliases.get(current) {
+        while let Some(next) = state.aliases.get(current) {
             if next == current {
                 break;
             }
             current = next;
         }
-        self.sessions
-            .contains_key(current)
-            .then(|| current.to_owned())
+        state.sessions.contains_key(current).then(|| current.to_owned())
     }
 
     pub fn consume_events(
-        &mut self,
+        &self,
         session_id: &str,
         events: Vec<CodexThreadEvent>,
     ) -> Result<Vec<AgentEvent>> {
-        let canonical = self
-            .canonical_session_id(session_id)
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+        let canonical = Self::canonical_session_id_locked(&state, session_id)
             .unwrap_or_else(|| session_id.to_owned());
-        let mut session = self
+        let mut session = state
             .sessions
             .remove(&canonical)
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
@@ -133,11 +156,12 @@ impl CodexAdapter {
         let mut mapped = Vec::new();
 
         for event in events {
+            session.info.last_active_at = Self::now_ms();
             match event {
                 CodexThreadEvent::ThreadStarted { thread_id } => {
                     if thread_id != session.info.id {
-                        self.aliases.insert(original_id.clone(), thread_id.clone());
-                        self.aliases.insert(thread_id.clone(), thread_id.clone());
+                        state.aliases.insert(original_id.clone(), thread_id.clone());
+                        state.aliases.insert(thread_id.clone(), thread_id.clone());
                         session.info.id = thread_id;
                     }
                 }
@@ -171,8 +195,8 @@ impl CodexAdapter {
         }
 
         let final_id = session.info.id.clone();
-        self.sessions.insert(final_id.clone(), session);
-        self.aliases.insert(final_id.clone(), final_id);
+        state.sessions.insert(final_id.clone(), session);
+        state.aliases.insert(final_id.clone(), final_id);
         Ok(mapped)
     }
 
@@ -255,8 +279,15 @@ impl CodexAdapter {
             && options.sandbox_mode == Some(SandboxMode::DangerFullAccess)
     }
 
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
     fn command_args(options: &SessionOptions, session_id: Option<&str>) -> Vec<String> {
-        let mut args = vec!["exec".to_owned(), "--experimental-json".to_owned()];
+        let mut args = vec!["exec".to_owned(), "--json".to_owned()];
 
         if Self::should_bypass_approvals_and_sandbox(options) {
             args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
@@ -317,35 +348,42 @@ impl CodexAdapter {
         args
     }
 
-    fn parse_thread_event(line: &str) -> Result<CodexThreadEvent> {
+    fn parse_thread_event(line: &str) -> Result<Option<CodexThreadEvent>> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            return Ok(None);
+        }
+
         let value: Value =
-            serde_json::from_str(line).map_err(|error| AgentError::new(error.to_string()))?;
-        let event_type = value
+            serde_json::from_str(trimmed).map_err(|error| AgentError::new(error.to_string()))?;
+        let Some(event_type) = value
             .get("type")
             .and_then(Value::as_str)
-            .ok_or_else(|| AgentError::new("codex event is missing a type"))?;
+        else {
+            return Ok(None);
+        };
 
         match event_type {
-            "thread.started" => Ok(CodexThreadEvent::ThreadStarted {
+            "thread.started" => Ok(Some(CodexThreadEvent::ThreadStarted {
                 thread_id: value
                     .get("thread_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| AgentError::new("thread.started is missing thread_id"))?
                     .to_owned(),
-            }),
-            "turn.started" => Ok(CodexThreadEvent::TurnStarted),
-            "item.started" => Ok(CodexThreadEvent::ItemStarted {
+            })),
+            "turn.started" => Ok(Some(CodexThreadEvent::TurnStarted)),
+            "item.started" => Ok(Some(CodexThreadEvent::ItemStarted {
                 item: Self::parse_item(value.get("item").cloned().unwrap_or(Value::Null)),
-            }),
-            "item.updated" => Ok(CodexThreadEvent::ItemUpdated {
+            })),
+            "item.updated" => Ok(Some(CodexThreadEvent::ItemUpdated {
                 item: Self::parse_item(value.get("item").cloned().unwrap_or(Value::Null)),
-            }),
-            "item.completed" => Ok(CodexThreadEvent::ItemCompleted {
+            })),
+            "item.completed" => Ok(Some(CodexThreadEvent::ItemCompleted {
                 item: Self::parse_item(value.get("item").cloned().unwrap_or(Value::Null)),
-            }),
+            })),
             "turn.completed" => {
                 let usage = value.get("usage").cloned().unwrap_or(Value::Null);
-                Ok(CodexThreadEvent::TurnCompleted {
+                Ok(Some(CodexThreadEvent::TurnCompleted {
                     input_tokens: usage
                         .get("input_tokens")
                         .and_then(Value::as_u64)
@@ -355,9 +393,9 @@ impl CodexAdapter {
                         .get("output_tokens")
                         .and_then(Value::as_u64)
                         .unwrap_or(0),
-                })
+                }))
             }
-            "turn.failed" => Ok(CodexThreadEvent::TurnFailed {
+            "turn.failed" => Ok(Some(CodexThreadEvent::TurnFailed {
                 message: value
                     .get("error")
                     .and_then(|error| error.get("message"))
@@ -365,15 +403,15 @@ impl CodexAdapter {
                     .or_else(|| value.get("message").and_then(Value::as_str))
                     .unwrap_or("Turn failed")
                     .to_owned(),
-            }),
-            "error" => Ok(CodexThreadEvent::Error {
+            })),
+            "error" => Ok(Some(CodexThreadEvent::Error {
                 message: value
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or("Unknown error")
                     .to_owned(),
-            }),
-            _ => Err(AgentError::new(format!("unsupported codex event: {event_type}"))),
+            })),
+            _ => Ok(None),
         }
     }
 
@@ -469,19 +507,22 @@ impl AgentAdapter for CodexAdapter {
         AgentType::Codex
     }
 
-    fn start_session(&mut self, options: SessionOptions) -> Result<SessionInfo> {
-        self.counter += 1;
-        let id = format!("codex-{}", self.counter);
+    fn start_session(&self, options: SessionOptions) -> Result<SessionInfo> {
+        let (id, now) = self.next_session_identity();
         let resolved = Self::resolved_options(options.clone());
         let info = SessionInfo {
             id: id.clone(),
             agent_type: AgentType::Codex,
             work_dir: options.work_dir.to_string_lossy().into_owned(),
             state: AgentState::Idle,
-            created_at: self.counter as i64,
-            last_active_at: self.counter as i64,
+            created_at: now,
+            last_active_at: now,
         };
-        self.sessions.insert(
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+        state.sessions.insert(
             id.clone(),
             ActiveSession {
                 info: info.clone(),
@@ -489,32 +530,42 @@ impl AgentAdapter for CodexAdapter {
                 running_child: None,
             },
         );
-        self.aliases.insert(id.clone(), id);
+        state.aliases.insert(id.clone(), id);
         Ok(info)
     }
 
     fn execute(
-        &mut self,
+        &self,
         session_id: &str,
         input: &str,
         on_event: &mut dyn FnMut(AgentEvent),
         options: Option<SessionOptions>,
     ) -> Result<()> {
-        let canonical = self
-            .canonical_session_id(session_id)
-            .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+        let canonical = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+            Self::canonical_session_id_locked(&state, session_id)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?
+        };
 
         let (resolved_options, current_thread_id) = {
-            let session = self
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+            let session = state
                 .sessions
                 .get_mut(&canonical)
                 .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
             if let Some(options) = options {
-                session.options = Self::merge_options(&session.options, Self::resolved_options(options));
+                session.options =
+                    Self::merge_options(&session.options, Self::resolved_options(options));
                 session.info.work_dir = session.options.work_dir.to_string_lossy().into_owned();
             }
             session.info.state = AgentState::Thinking;
-            session.info.last_active_at += 1;
+            session.info.last_active_at = Self::now_ms();
             (session.options.clone(), session.info.id.clone())
         };
 
@@ -555,7 +606,9 @@ impl AgentAdapter for CodexAdapter {
             .ok_or_else(|| AgentError::new("codex child process has no stderr"))?;
 
         let child_ref = Arc::new(Mutex::new(child));
-        if let Some(session) = self.sessions.get_mut(&canonical) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(session) = state.sessions.get_mut(&canonical)
+        {
             session.running_child = Some(child_ref.clone());
         }
 
@@ -568,7 +621,9 @@ impl AgentAdapter for CodexAdapter {
         let mut active_session_id = session_id.to_owned();
         for line in BufReader::new(stdout).lines() {
             let line = line.map_err(|error| AgentError::new(error.to_string()))?;
-            let event = Self::parse_thread_event(&line)?;
+            let Some(event) = Self::parse_thread_event(&line)? else {
+                continue;
+            };
             let mapped = self.consume_events(&active_session_id, vec![event])?;
             if let Some(canonical) = self.canonical_session_id(&active_session_id) {
                 active_session_id = canonical;
@@ -585,8 +640,9 @@ impl AgentAdapter for CodexAdapter {
             .map_err(|error| AgentError::new(error.to_string()))?;
         let stderr_output = stderr_reader.join().unwrap_or_default();
 
-        if let Some(canonical) = self.canonical_session_id(&active_session_id)
-            && let Some(session) = self.sessions.get_mut(&canonical)
+        if let Ok(mut state) = self.state.lock()
+            && let Some(canonical) = Self::canonical_session_id_locked(&state, &active_session_id)
+            && let Some(session) = state.sessions.get_mut(&canonical)
         {
             session.running_child = None;
             session.info.state = if status.success() {
@@ -594,6 +650,7 @@ impl AgentAdapter for CodexAdapter {
             } else {
                 AgentState::Error
             };
+            session.info.last_active_at = Self::now_ms();
         }
 
         if !status.success() {
@@ -607,54 +664,100 @@ impl AgentAdapter for CodexAdapter {
         Ok(())
     }
 
-    fn resume_session(&mut self, session_id: &str) -> Result<SessionInfo> {
-        let canonical = self
-            .canonical_session_id(session_id)
+    fn resume_session(&self, session_id: &str) -> Result<SessionInfo> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+        let canonical = Self::canonical_session_id_locked(&state, session_id)
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        self.sessions
+        state.sessions
             .get(&canonical)
             .map(|session| session.info.clone())
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))
     }
 
-    fn cancel(&mut self, session_id: &str) -> Result<()> {
-        let canonical = self
-            .canonical_session_id(session_id)
-            .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        if let Some(session) = self.sessions.get_mut(&canonical) {
-            if let Some(child) = session.running_child.take()
-                && let Ok(mut child) = child.lock()
-            {
-                let _ = child.kill();
-            }
+    fn cancel(&self, session_id: &str) -> Result<()> {
+        let child = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+            let canonical = Self::canonical_session_id_locked(&state, session_id)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+            let session = state
+                .sessions
+                .get_mut(&canonical)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
             session.info.state = AgentState::Idle;
-        }
-        Ok(())
-    }
-
-    fn delete_session(&mut self, session_id: &str) -> Result<()> {
-        let canonical = self
-            .canonical_session_id(session_id)
-            .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        if let Some(session) = self.sessions.remove(&canonical)
-            && let Some(child) = session.running_child
+            session.info.last_active_at = Self::now_ms();
+            session.running_child.take()
+        };
+        if let Some(child) = child
             && let Ok(mut child) = child.lock()
         {
             let _ = child.kill();
         }
-        self.aliases.retain(|_, value| value != &canonical);
+        Ok(())
+    }
+
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        let session = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
+            let canonical = Self::canonical_session_id_locked(&state, session_id)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+            let session = state
+                .sessions
+                .remove(&canonical)
+                .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
+            state.aliases.retain(|_, value| value != &canonical);
+            session
+        };
+        if let Some(child) = session.running_child
+            && let Ok(mut child) = child.lock()
+        {
+            let _ = child.kill();
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::CodexAdapter;
+    use super::{CodexAdapter, CodexThreadEvent};
 
     #[test]
     fn parse_thread_event_accepts_turn_started_events_from_codex_cli() {
         let parsed = CodexAdapter::parse_thread_event(r#"{"type":"turn.started"}"#);
 
-        assert!(parsed.is_ok(), "expected turn.started to parse, got {parsed:?}");
+        assert!(
+            matches!(parsed, Ok(Some(CodexThreadEvent::TurnStarted))),
+            "expected turn.started to parse, got {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn parse_thread_event_ignores_unknown_event_types_from_codex_cli() {
+        let parsed = CodexAdapter::parse_thread_event(
+            r#"{"type":"turn.progress","message":"streaming"}"#,
+        );
+
+        assert!(
+            matches!(parsed, Ok(None)),
+            "expected unknown event types to be ignored, got {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn parse_thread_event_ignores_non_json_noise_lines() {
+        let parsed = CodexAdapter::parse_thread_event("warning: transient stdout noise");
+
+        assert!(
+            matches!(parsed, Ok(None)),
+            "expected non-JSON lines to be ignored, got {parsed:?}"
+        );
     }
 }

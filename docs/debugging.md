@@ -1,6 +1,10 @@
-# CodePilot 启动与调试指南
+# CTunnel 启动与调试指南
 
 > 面向开发者的 Rust 运行时本地验证手册
+>
+> 上线前请先看：`docs/release-preflight-checklist.md`
+>
+> 对外产品名与默认 CLI 命令为 `CTunnel` / `ctunnel`；内部 crates 仍保留 `codepilot-*` 命名。
 
 ---
 
@@ -41,11 +45,11 @@ rustup target add wasm32-unknown-unknown
 | Claude Code CLI | `npm i -g @anthropic-ai/claude-code` | 验证 Claude adapter 时使用 |
 | Wrangler | `npm i -g wrangler` | 可选；未全局安装时也可直接用 `npx wrangler` |
 
-### 1.4 环境变量
+### 1.4 Codex 登录态
 
 ```bash
-# 使用 Codex 代理时
-export OPENAI_API_KEY="sk-..."
+codex login
+codex login status
 ```
 
 ---
@@ -66,6 +70,9 @@ export OPENAI_API_KEY="sk-..."
 | `pnpm run bridge:help` | 查看当前 Rust Bridge CLI 参数面 |
 | `pnpm run bridge -- --agent codex --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge |
 | `pnpm run bridge -- --agent codex --tunnel --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge，并附加 Cloudflare Tunnel |
+| `ctunnel` | 以默认 `codex + tunnel` 配置启动 Bridge，工作目录默认 `/Users/mrslimslim/.openclaw` |
+| `ctunnel preflight` | 运行上线前自动化自检 |
+| `ctunnel relay deploy` | 部署 Cloudflare Relay Worker |
 | `pnpm run relay:dev` | 在 Rust Relay crate 目录下启动 `wrangler dev` |
 | `pnpm run relay:deploy` | 部署 Rust Relay Worker |
 

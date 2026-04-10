@@ -182,11 +182,11 @@ public struct SlashCatalogProjector: Sendable {
     ) -> [SlashCommandMeta] {
         let needle = normalizedQuery.dropFirst()
         guard !needle.isEmpty else {
-            return commands.filter { $0.availability != .hidden }
+            return commands.filter { $0.availability == .enabled }
         }
 
         return commands.filter { command in
-            guard command.availability != .hidden else {
+            guard command.availability == .enabled else {
                 return false
             }
             let id = command.id.lowercased()
@@ -209,7 +209,7 @@ public struct SlashCatalogProjector: Sendable {
             guard command.kind == .workflow else {
                 return false
             }
-            guard command.availability != .hidden else {
+            guard command.availability == .enabled else {
                 return false
             }
             let id = "/" + command.id.lowercased()

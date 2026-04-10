@@ -13,14 +13,24 @@ struct SessionDetailView: View {
     let sessionID: String
 
     @State private var draft: String = ""
+    @State private var composerContext = SessionComposerContext()
+    @State private var currentSessionID: String
     @State private var errorMessage: String?
     @State private var sessionConfig = SessionConfig()
     @State private var slashWorkflow = SlashWorkflowState()
     @State private var showSlashMenu = false
+    @State private var showSessionSwitcher = false
     @State private var startsNewSession = false
     @State private var showDeleteConfirmation = false
     @State private var showCopiedConversation = false
+    @State private var lastFileSearchQuery: String?
+    @State private var pendingFileSearchTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
+
+    init(sessionID: String) {
+        self.sessionID = sessionID
+        _currentSessionID = State(initialValue: sessionID)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -88,6 +98,11 @@ struct SessionDetailView: View {
                         .foregroundStyle(.secondary)
                     }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    showSessionSwitcher = true
+                    dismissComposerKeyboard()
+                }
             }
 
             ToolbarItem(placement: .topBarTrailing) {
@@ -137,12 +152,40 @@ struct SessionDetailView: View {
             }
         }
         .onAppear {
-            appModel.selectSession(id: sessionID)
+            appModel.selectSession(id: currentSessionID)
             draft = viewModel.draft
+            composerContext = SessionComposerContext(draft: draft)
             slashWorkflow.updateCatalog(slashCatalog)
+        }
+        .onChange(of: currentSessionID) { _, newSessionID in
+            pendingFileSearchTask?.cancel()
+            appModel.selectSession(id: newSessionID)
+            draft = viewModel.draft
+            composerContext = SessionComposerContext(draft: draft)
+            lastFileSearchQuery = nil
+            showSlashMenu = false
+            startsNewSession = false
         }
         .onChange(of: slashCatalog) { _, newCatalog in
             slashWorkflow.updateCatalog(newCatalog)
+        }
+        .onDisappear {
+            pendingFileSearchTask?.cancel()
+        }
+        .sheet(isPresented: $showSessionSwitcher) {
+            SessionSwitcherSheet(
+                sessions: sessionsForCurrentConnection,
+                activeSessionID: currentSessionID,
+                onSelect: { selectedSessionID in
+                    currentSessionID = selectedSessionID
+                },
+                onStartNewSession: {
+                    startsNewSession = true
+                    draft = ""
+                    composerContext = SessionComposerContext()
+                    isComposerFocused = true
+                }
+            )
         }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
@@ -264,6 +307,14 @@ struct SessionDetailView: View {
                 ))
             }
 
+            if !composerContext.selectedFiles.isEmpty {
+                ComposerFileChipRow(files: composerContext.selectedFiles) { path in
+                    composerContext.removeFile(path: path)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+
             // Config chips
             if !sessionConfig.isEmpty {
                 ConfigChips(config: $sessionConfig)
@@ -287,11 +338,21 @@ struct SessionDetailView: View {
                         }
                     }
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                            .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let activeQuery = composerContext.activeFileSearchQuery {
+                fileSearchPanel(query: activeQuery)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .bottom)),
+                        removal: .opacity
+                    ))
             }
 
             // Input row
@@ -325,9 +386,7 @@ struct SessionDetailView: View {
                         .focused($isComposerFocused)
                         .layoutPriority(1)
                         .onChange(of: draft) { _, newValue in
-                            withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
-                                showSlashMenu = newValue.hasPrefix("/") || slashWorkflow.canGoBack
-                            }
+                            handleDraftChanged(newValue)
                         }
 
                     if isComposerFocused {
@@ -356,13 +415,13 @@ struct SessionDetailView: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 30))
                         .foregroundStyle(
-                            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            composerContext.serializedCommandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 ? Color(.systemGray4)
                                 : CPTheme.accent
                         )
                 }
                 .frame(width: 40, height: 40)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(composerContext.serializedCommandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -380,11 +439,11 @@ struct SessionDetailView: View {
     }
 
     private var session: SessionInfo? {
-        appModel.session(for: sessionID)
+        appModel.session(for: currentSessionID)
     }
 
     private var timeline: [TimelineItem] {
-        appModel.timeline(for: sessionID)
+        appModel.timeline(for: currentSessionID)
     }
 
     private var conversationTranscript: String {
@@ -392,19 +451,30 @@ struct SessionDetailView: View {
     }
 
     private var files: [FileState] {
-        appModel.files(for: sessionID)
+        appModel.files(for: currentSessionID)
     }
 
     private var slashCatalog: SlashCatalogMessage? {
-        appModel.slashCatalog(forSessionID: sessionID)
+        appModel.slashCatalog(forSessionID: currentSessionID)
     }
 
     private var connectionID: String? {
-        appModel.connectionID(forSessionID: sessionID)
+        appModel.connectionID(forSessionID: currentSessionID)
     }
 
     private var viewModel: SessionDetailViewModel {
-        appModel.makeSessionDetailViewModel(sessionID: sessionID)
+        appModel.makeSessionDetailViewModel(sessionID: currentSessionID)
+    }
+
+    private var fileSearchState: FileSearchState? {
+        viewModel.fileSearchState
+    }
+
+    private var sessionsForCurrentConnection: [SessionInfo] {
+        guard let connectionID else {
+            return session.map { [$0] } ?? []
+        }
+        return appModel.sessionsForConnection(connectionID)
     }
 
     private func isBusy(_ state: AgentState) -> Bool {
@@ -419,22 +489,27 @@ struct SessionDetailView: View {
     private func sendDraft() {
         do {
             let config = sessionConfig.isEmpty ? nil : sessionConfig
+            let text = composerContext.serializedCommandText
             if startsNewSession {
                 try appModel.sendNewSessionCommand(
-                    draft,
+                    text,
                     connectionID: connectionID,
                     config: config
                 )
                 draft = ""
+                composerContext = SessionComposerContext()
                 startsNewSession = false
                 DispatchQueue.main.async {
                     dismiss()
                 }
             } else {
-                viewModel.draft = draft
+                viewModel.draft = text
                 try viewModel.sendDraft(config: config)
                 draft = viewModel.draft
+                composerContext = SessionComposerContext(draft: draft)
             }
+            pendingFileSearchTask?.cancel()
+            lastFileSearchQuery = nil
             isComposerFocused = false
             appModel.refreshPublishedState()
             errorMessage = nil
@@ -472,6 +547,7 @@ struct SessionDetailView: View {
             withAnimation(.spring(duration: 0.24, bounce: 0.14)) {
                 startsNewSession = true
                 draft = ""
+                composerContext = SessionComposerContext()
                 showSlashMenu = false
             }
             isComposerFocused = true
@@ -532,6 +608,132 @@ struct SessionDetailView: View {
                 action()
             }
         }
+    }
+
+    private func handleDraftChanged(_ newValue: String) {
+        composerContext.draft = newValue
+
+        withAnimation(.spring(duration: 0.25, bounce: 0.15)) {
+            showSlashMenu = composerContext.activeFileSearchQuery == nil
+                && (newValue.hasPrefix("/") || slashWorkflow.canGoBack)
+        }
+
+        let activeQuery = composerContext.activeFileSearchQuery
+        guard activeQuery != lastFileSearchQuery else {
+            return
+        }
+
+        lastFileSearchQuery = activeQuery
+        pendingFileSearchTask?.cancel()
+
+        guard let activeQuery else {
+            do {
+                try viewModel.searchFiles(query: "", limit: 12)
+                appModel.refreshPublishedState()
+            } catch {
+                errorMessage = "Failed to search files."
+            }
+            return
+        }
+
+        pendingFileSearchTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                try viewModel.searchFiles(query: activeQuery, limit: 12)
+                appModel.refreshPublishedState()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+                errorMessage = "Failed to search files."
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileSearchPanel(query: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("FILES")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.8)
+                Spacer()
+                Text("@\(query)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            if let fileSearchState, fileSearchState.isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Searching project files…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let fileSearchState, let errorMessage = fileSearchState.errorMessage {
+                HStack {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(CPTheme.error)
+                    Spacer()
+                    Button("Retry") {
+                        do {
+                            try viewModel.searchFiles(query: query, limit: 12)
+                            appModel.refreshPublishedState()
+                        } catch {
+                            self.errorMessage = "Failed to search files."
+                        }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            } else if let fileSearchState, !fileSearchState.results.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(fileSearchState.results, id: \.path) { result in
+                        Button {
+                            composerContext.insertFile(result)
+                            draft = composerContext.draft
+                            handleDraftChanged(draft)
+                            isComposerFocused = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "doc.text")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(CPTheme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(result.displayName ?? URL(fileURLWithPath: result.path).lastPathComponent)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(result.directoryHint ?? result.path)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(CPTheme.inputBg, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            } else {
+                Text("No files match this query.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func resignActiveTextInput() {

@@ -25,6 +25,8 @@
 		100000000000000000000010 /* SlashCommandMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000010F /* SlashCommandMenu.swift */; };
 		100000000000000000000011 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000110 /* Assets.xcassets */; };
 		100000000000000000000012 /* DiffViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000111 /* DiffViewerView.swift */; };
+		100000000000000000000013 /* ComposerFileChipRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000112 /* ComposerFileChipRow.swift */; };
+		100000000000000000000014 /* SessionSwitcherSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000000113 /* SessionSwitcherSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +47,8 @@
 		10000000000000000000010F /* SlashCommandMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommandMenu.swift; sourceTree = "<group>"; };
 		100000000000000000000110 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		100000000000000000000111 /* DiffViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffViewerView.swift; sourceTree = "<group>"; };
+		100000000000000000000112 /* ComposerFileChipRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerFileChipRow.swift; sourceTree = "<group>"; };
+		100000000000000000000113 /* SessionSwitcherSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSwitcherSheet.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -115,6 +119,8 @@
 			children = (
 				100000000000000000000105 /* SessionsView.swift */,
 				100000000000000000000106 /* SessionDetailView.swift */,
+				100000000000000000000112 /* ComposerFileChipRow.swift */,
+				100000000000000000000113 /* SessionSwitcherSheet.swift */,
 			);
 			path = Sessions;
 			sourceTree = "<group>";
@@ -249,6 +255,8 @@
 				100000000000000000000004 /* QRScannerView.swift in Sources */,
 				100000000000000000000005 /* SessionsView.swift in Sources */,
 				100000000000000000000006 /* SessionDetailView.swift in Sources */,
+				100000000000000000000013 /* ComposerFileChipRow.swift in Sources */,
+				100000000000000000000014 /* SessionSwitcherSheet.swift in Sources */,
 				10000000000000000000000C /* DiagnosticsView.swift in Sources */,
 				100000000000000000000007 /* FileViewerView.swift in Sources */,
 				100000000000000000000012 /* DiffViewerView.swift in Sources */,

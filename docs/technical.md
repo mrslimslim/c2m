@@ -1,4 +1,4 @@
-# CodePilot 技术文档
+# CTunnel 技术文档
 
 > Mobile Command Center for AI Coding Agents
 >
@@ -21,7 +21,7 @@
 
 ### 1.1 定位
 
-CodePilot 是一个“手机远程控制 AI 编程代理”的系统。手机端发送自然语言指令，Bridge 负责维护会话、路由命令、保存事件日志，并把代理事件流回传到手机；公网访问默认通过 Cloudflare Tunnel 暴露当前 Bridge。
+CTunnel 是一个“手机远程控制 AI 编程代理”的系统。手机端发送自然语言指令，Bridge 负责维护会话、路由命令、保存事件日志，并把代理事件流回传到手机；公网访问默认通过 Cloudflare Tunnel 暴露当前 Bridge。
 
 ### 1.2 当前默认运行时
 
