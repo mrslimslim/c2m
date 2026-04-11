@@ -298,12 +298,23 @@ fn load_diff_text_from_git(work_dir: &Path, change: &FileChange) -> Result<Strin
 
     run_git(
         work_dir,
-        &["diff", "--no-ext-diff", "--no-color", "--relative", "--", &change.path],
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--relative",
+            "--",
+            &change.path,
+        ],
     )
 }
 
 fn run_git(work_dir: &Path, args: &[&str]) -> Result<String> {
-    let output = match Command::new("git").args(args).current_dir(work_dir).output() {
+    let output = match Command::new("git")
+        .args(args)
+        .current_dir(work_dir)
+        .output()
+    {
         Ok(output) => output,
         Err(_) => return Ok(String::new()),
     };

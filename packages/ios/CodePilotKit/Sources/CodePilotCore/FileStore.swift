@@ -5,12 +5,20 @@ public struct FileState: Codable, Equatable, Sendable {
     public let content: String
     public let language: String
     public let isLoading: Bool
+    public let errorMessage: String?
 
-    public init(path: String, content: String, language: String, isLoading: Bool) {
+    public init(
+        path: String,
+        content: String,
+        language: String,
+        isLoading: Bool,
+        errorMessage: String? = nil
+    ) {
         self.path = path
         self.content = content
         self.language = language
         self.isLoading = isLoading
+        self.errorMessage = errorMessage
     }
 }
 
@@ -51,11 +59,7 @@ public final class FileStore {
         lock.lock()
         defer { lock.unlock() }
 
-        if var queue = pendingRequestsByPath[path],
-           let index = queue.firstIndex(of: sessionId) {
-            queue.remove(at: index)
-            pendingRequestsByPath[path] = queue.isEmpty ? nil : queue
-        }
+        removePendingRequestLocked(path: path, sessionId: sessionId)
 
         if let state = fileStatesBySession[sessionId]?[path], state.isLoading {
             fileStatesBySession[sessionId]?[path] = nil
@@ -63,6 +67,20 @@ public final class FileStore {
                 fileStatesBySession[sessionId] = nil
             }
         }
+    }
+
+    public func markRequestFailed(path: String, sessionId: String, message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        removePendingRequestLocked(path: path, sessionId: sessionId)
+        fileStatesBySession[sessionId, default: [:]][path] = .init(
+            path: path,
+            content: "",
+            language: "",
+            isLoading: false,
+            errorMessage: message
+        )
     }
 
     public func routeFileContent(
@@ -83,7 +101,8 @@ public final class FileStore {
             path: path,
             content: content,
             language: language,
-            isLoading: false
+            isLoading: false,
+            errorMessage: nil
         )
     }
 
@@ -165,5 +184,13 @@ public final class FileStore {
         let sessionId = queue.removeFirst()
         pendingRequestsByPath[path] = queue.isEmpty ? nil : queue
         return sessionId
+    }
+
+    private func removePendingRequestLocked(path: String, sessionId: String) {
+        if var queue = pendingRequestsByPath[path],
+           let index = queue.firstIndex(of: sessionId) {
+            queue.remove(at: index)
+            pendingRequestsByPath[path] = queue.isEmpty ? nil : queue
+        }
     }
 }

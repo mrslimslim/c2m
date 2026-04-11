@@ -153,6 +153,91 @@ final class StoreSnapshotTests: XCTestCase {
         )
     }
 
+    func testTimelineStoreCoalescesStreamingAgentMessageSnapshotsAndChunks() {
+        let store = TimelineStore()
+
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .agentMessage(text: "Hel"),
+            timestamp: 10,
+            eventId: 1
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .agentMessage(text: "Hello"),
+            timestamp: 11,
+            eventId: 2
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .agentMessage(text: " world"),
+            timestamp: 12,
+            eventId: 3
+        )
+
+        XCTAssertEqual(
+            store.timeline(for: "session-1"),
+            [
+                .init(
+                    eventId: 3,
+                    timestamp: 10,
+                    kind: .agentMessage(text: "Hello world")
+                )
+            ]
+        )
+    }
+
+    func testTimelineStoreCoalescesThinkingAndCommandOutputStreamingUpdates() {
+        let store = TimelineStore()
+
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .thinking(text: "Think"),
+            timestamp: 10,
+            eventId: 1
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .thinking(text: "ing"),
+            timestamp: 11,
+            eventId: 2
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "cargo test", output: "run", exitCode: nil, status: .running),
+            timestamp: 12,
+            eventId: 3
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "cargo test", output: "running", exitCode: nil, status: .running),
+            timestamp: 13,
+            eventId: 4
+        )
+        store.appendBridgeEvent(
+            sessionId: "session-1",
+            event: .commandExec(command: "cargo test", output: " complete", exitCode: 0, status: .done),
+            timestamp: 14,
+            eventId: 5
+        )
+
+        XCTAssertEqual(
+            store.timeline(for: "session-1"),
+            [
+                .init(
+                    eventId: 2,
+                    timestamp: 10,
+                    kind: .thinking(text: "Thinking")
+                ),
+                .init(
+                    eventId: 5,
+                    timestamp: 12,
+                    kind: .commandExec(command: "cargo test", output: "running complete", exitCode: 0, status: .done)
+                ),
+            ]
+        )
+    }
+
     func testConversationSnapshotStoreRoundTripsSessionTimelineFilesAndConnectionMapping() throws {
         let suiteName = "ConversationSnapshotStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -261,6 +346,36 @@ final class StoreSnapshotTests: XCTestCase {
         )
 
         XCTAssertEqual(store.session(for: "session-1")?.state, .idle)
+        XCTAssertEqual(store.session(for: "session-1")?.lastActiveAt, 200)
+    }
+
+    func testSessionStoreRejectsOlderIdleSessionListStateWhenLocalBusyStateIsNewer() {
+        let store = SessionStore()
+        store.upsert(
+            .init(
+                id: "session-1",
+                agentType: .codex,
+                workDir: "/tmp/repo",
+                state: .thinking,
+                createdAt: 100,
+                lastActiveAt: 200
+            )
+        )
+
+        _ = store.applySessionList(
+            [
+                .init(
+                    id: "session-1",
+                    agentType: .codex,
+                    workDir: "/tmp/repo",
+                    state: .idle,
+                    createdAt: 100,
+                    lastActiveAt: 100
+                )
+            ]
+        )
+
+        XCTAssertEqual(store.session(for: "session-1")?.state, .thinking)
         XCTAssertEqual(store.session(for: "session-1")?.lastActiveAt, 200)
     }
 }

@@ -29,6 +29,7 @@ struct DiffViewerView: View {
                                 sessionID: sessionID,
                                 eventId: eventId,
                                 file: file,
+                                displayPath: displayPath(file.path),
                                 isLoadingMore: state.loadingMorePaths.contains(file.path),
                                 fileError: state.fileErrorsByPath[file.path],
                                 onLoadNextHunk: loadNextHunk
@@ -65,6 +66,10 @@ struct DiffViewerView: View {
         appModel.makeSessionDetailViewModel(sessionID: sessionID)
     }
 
+    private var sessionWorkDir: String? {
+        appModel.session(for: sessionID)?.workDir
+    }
+
     private var summaryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("\(changes.count) file\(changes.count == 1 ? "" : "s") changed")
@@ -76,7 +81,7 @@ struct DiffViewerView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(CPTheme.fileChangeColor(change.kind))
 
-                    Text(change.path)
+                    Text(displayPath(change.path))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -151,12 +156,34 @@ struct DiffViewerView: View {
             localErrorMessage = "Failed to request additional hunks."
         }
     }
+
+    private func displayPath(_ rawPath: String) -> String {
+        guard let sessionWorkDir, !sessionWorkDir.isEmpty else {
+            return rawPath
+        }
+
+        let standardizedRawPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+        guard standardizedRawPath.hasPrefix("/") else {
+            return rawPath
+        }
+
+        let standardizedWorkDir = URL(fileURLWithPath: sessionWorkDir).standardizedFileURL.path
+        guard standardizedRawPath == standardizedWorkDir
+            || standardizedRawPath.hasPrefix(standardizedWorkDir + "/") else {
+            return rawPath
+        }
+
+        let trimmed = String(standardizedRawPath.dropFirst(standardizedWorkDir.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.isEmpty ? rawPath : trimmed
+    }
 }
 
 private struct DiffFileSection: View {
     let sessionID: String
     let eventId: Int
     let file: DiffFile
+    let displayPath: String
     let isLoadingMore: Bool
     let fileError: String?
     let onLoadNextHunk: (String, Int) -> Void
@@ -165,7 +192,7 @@ private struct DiffFileSection: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(file.path)
+                    Text(displayPath)
                         .font(.system(.subheadline, design: .monospaced).weight(.semibold))
                         .lineLimit(2)
                     HStack(spacing: 8) {
@@ -182,13 +209,22 @@ private struct DiffFileSection: View {
 
                 Spacer()
 
-                NavigationLink {
-                    RequestedFileViewerView(sessionID: sessionID, path: file.path)
-                } label: {
-                    Text("Open File")
+                if file.kind == .delete {
+                    Text("Deleted")
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                } else {
+                    NavigationLink {
+                        RequestedFileViewerView(sessionID: sessionID, path: file.path)
+                    } label: {
+                        Text("Open File")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
 
             ForEach(Array(file.loadedHunks.enumerated()), id: \.offset) { _, hunk in

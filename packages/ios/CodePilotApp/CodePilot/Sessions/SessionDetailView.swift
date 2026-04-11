@@ -73,7 +73,7 @@ struct SessionDetailView: View {
                 }
                 .padding(.vertical, 8)
             }
-            .onChange(of: timeline.count) { _, _ in
+            .onChange(of: timelineScrollToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.3)) {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
@@ -366,6 +366,7 @@ struct SessionDetailView: View {
                             .font(.system(size: 28))
                             .foregroundStyle(CPTheme.error)
                     }
+                    .accessibilityIdentifier("session.composer.cancel")
                     .frame(width: 40, height: 40)
                 }
 
@@ -384,6 +385,7 @@ struct SessionDetailView: View {
                         .font(.subheadline)
                         .lineLimit(1...5)
                         .focused($isComposerFocused)
+                        .accessibilityIdentifier("session.composer.input")
                         .layoutPriority(1)
                         .onChange(of: draft) { _, newValue in
                             handleDraftChanged(newValue)
@@ -420,6 +422,7 @@ struct SessionDetailView: View {
                                 : CPTheme.accent
                         )
                 }
+                .accessibilityIdentifier("session.composer.send")
                 .frame(width: 40, height: 40)
                 .disabled(composerContext.serializedCommandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -444,6 +447,13 @@ struct SessionDetailView: View {
 
     private var timeline: [TimelineItem] {
         appModel.timeline(for: currentSessionID)
+    }
+
+    private var timelineScrollToken: String {
+        guard let last = timeline.last else {
+            return "empty"
+        }
+        return "\(timeline.count):\(last.eventId ?? -1):\(last.timestamp):\(timelineScrollSignature(for: last.kind))"
     }
 
     private var conversationTranscript: String {
@@ -481,6 +491,31 @@ struct SessionDetailView: View {
         switch state {
         case .thinking, .coding, .runningCommand, .waitingApproval: return true
         case .idle, .error: return false
+        }
+    }
+
+    private func timelineScrollSignature(for kind: TimelineItem.Kind) -> String {
+        switch kind {
+        case let .system(message):
+            return "system:\(message.count)"
+        case let .userCommand(text):
+            return "user:\(text.count)"
+        case let .status(state, message):
+            return "status:\(state.rawValue):\(message.count)"
+        case let .thinking(text):
+            return "thinking:\(text.count)"
+        case let .agentMessage(text):
+            return "agent:\(text.count)"
+        case let .codeChange(changes):
+            return "changes:\(changes.count)"
+        case let .commandExec(command, output, exitCode, status):
+            return "command:\(command.count):\(output?.count ?? -1):\(exitCode.map(String.init) ?? "nil"):\(status.rawValue)"
+        case let .turnCompleted(summary, filesChanged, usage):
+            return "done:\(summary.count):\(filesChanged.count):\(usage?.outputTokens ?? -1)"
+        case let .sessionError(message):
+            return "session_error:\(message.count)"
+        case let .transportError(message):
+            return "transport_error:\(message.count)"
         }
     }
 
@@ -873,6 +908,9 @@ private struct AgentMessageBubble: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.trailing, 24)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("timeline.agentMessage")
+        .accessibilityLabel(text)
     }
 }
 
@@ -895,6 +933,9 @@ private struct ThinkingCell: View {
         }
         .padding(.leading, 13)
         .padding(.trailing, 40)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("timeline.thinking")
+        .accessibilityLabel(text)
     }
 }
 

@@ -111,6 +111,31 @@ fn claude_adapter_maps_tool_use_and_tool_result_events_and_supports_cancellation
 }
 
 #[test]
+fn claude_adapter_normalizes_absolute_file_change_paths_within_the_work_dir() {
+    let adapter = ClaudeAdapter::new();
+    let session = adapter.start_session(session_options()).unwrap();
+
+    let mut write_input = BTreeMap::new();
+    write_input.insert("file_path".to_owned(), json!("/tmp/project/src/lib.rs"));
+
+    let events = adapter
+        .consume_events(
+            &session.id,
+            vec![ClaudeStreamEvent::ToolUse {
+                name: "Write".to_owned(),
+                input: write_input,
+            }],
+        )
+        .unwrap();
+
+    assert!(matches!(
+        &events[0],
+        AgentEvent::CodeChange { changes }
+            if changes.len() == 1 && changes[0].path == "src/lib.rs"
+    ));
+}
+
+#[test]
 fn claude_adapter_start_session_uses_epoch_millisecond_timestamps() {
     let adapter = ClaudeAdapter::new();
     let session = adapter.start_session(session_options()).unwrap();

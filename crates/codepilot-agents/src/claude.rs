@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{BufRead, BufReader, Read},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -77,10 +78,7 @@ impl ClaudeAdapter {
     fn next_session_identity(&self) -> (String, i64) {
         let now = Self::now_ms();
         let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        (
-            format!("claude-{now}-{seq:06x}"),
-            now,
-        )
+        (format!("claude-{now}-{seq:06x}"), now)
     }
 
     pub fn last_session_id(&self, session_id: &str) -> Option<String> {
@@ -172,7 +170,10 @@ impl ClaudeAdapter {
                         .to_owned();
                     vec![AgentEvent::CodeChange {
                         changes: vec![FileChange {
-                            path,
+                            path: Self::normalize_file_change_path(
+                                Path::new(&session.info.work_dir),
+                                &path,
+                            ),
                             kind: if name.eq_ignore_ascii_case("write") {
                                 FileChangeKind::Add
                             } else {
@@ -192,6 +193,28 @@ impl ClaudeAdapter {
                 message: content,
             }],
         }
+    }
+
+    fn normalize_file_change_path(work_dir: &Path, path: &str) -> String {
+        let candidate = Path::new(path);
+        if !candidate.is_absolute() {
+            return path.to_owned();
+        }
+
+        let canonical_work_dir =
+            std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
+        let resolved = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+        resolved
+            .strip_prefix(&canonical_work_dir)
+            .ok()
+            .map(|relative| {
+                relative
+                    .to_string_lossy()
+                    .trim_start_matches('/')
+                    .to_owned()
+            })
+            .filter(|relative| !relative.is_empty())
+            .unwrap_or_else(|| path.to_owned())
     }
 
     fn parse_stream_event(line: &str) -> Result<ClaudeStreamEvent> {
@@ -248,10 +271,7 @@ impl ClaudeAdapter {
     }
 
     fn parse_content_block(value: Value) -> ClaudeContentBlock {
-        let block_type = value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("text");
+        let block_type = value.get("type").and_then(Value::as_str).unwrap_or("text");
 
         match block_type {
             "thinking" => ClaudeContentBlock::Thinking(
@@ -358,7 +378,10 @@ impl AgentAdapter for ClaudeAdapter {
                 .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
             session.info.state = AgentState::Thinking;
             session.info.last_active_at = Self::now_ms();
-            (session.info.work_dir.clone(), session.last_session_id.clone())
+            (
+                session.info.work_dir.clone(),
+                session.last_session_id.clone(),
+            )
         };
 
         let mut args = vec![

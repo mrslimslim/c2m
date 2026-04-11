@@ -68,7 +68,7 @@ codex login status
 | `cargo run -p codepilot-bridge -- --help` | 查看当前 Rust Bridge CLI 参数面 |
 | `cargo run -p codepilot-bridge -- --agent codex --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge |
 | `cargo run -p codepilot-bridge -- --agent codex --tunnel --dir ~/my-project` | 以 Codex 模式启动 Rust Bridge，并附加 Cloudflare Tunnel |
-| `ctunnel` | 以默认 `codex + tunnel` 配置启动 Bridge，工作目录默认 `/Users/mrslimslim/.openclaw` |
+| `ctunnel` | 以默认 `codex + tunnel` 配置启动 Bridge，工作目录默认为执行命令时的当前目录 |
 | `ctunnel preflight` | 运行上线前自动化自检 |
 | `ctunnel relay deploy` | 部署 Cloudflare Relay Worker |
 | `cd crates/codepilot-relay-worker && wrangler dev` | 在 Relay crate 目录下启动本地 Worker |

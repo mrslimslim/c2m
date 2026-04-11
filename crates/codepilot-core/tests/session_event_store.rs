@@ -121,7 +121,10 @@ fn prepare_live_session_detaches_a_reused_alias_from_previous_history() {
         .append_event("temp-session", 1001, thinking_event("new"))
         .unwrap();
 
-    assert_eq!(store.resolve_session_id("temp-session").unwrap(), "temp-session");
+    assert_eq!(
+        store.resolve_session_id("temp-session").unwrap(),
+        "temp-session"
+    );
 
     let temp_replay = store.read_events_after("temp-session", 0).unwrap();
     assert_eq!(temp_replay.len(), 1);

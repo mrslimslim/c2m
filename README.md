@@ -61,7 +61,6 @@ codex login status
 ```bash
 git clone <your-repo-url>
 cd c2m
-export CTUNNEL_DIR=/absolute/path/to/project
 ./bin/ctunnel preflight
 ```
 
@@ -77,15 +76,17 @@ Make sure the target directory is in your `PATH`.
 
 ### Start the bridge
 
+Run `ctunnel` from the project directory you want the bridge to expose:
+
 ```bash
-export CTUNNEL_DIR=/absolute/path/to/project
+cd /absolute/path/to/project
 ctunnel
 ```
 
-By default this starts:
+By default this points the bridge at your current directory. For example, if you run it inside `/absolute/path/to/project`, the bridge starts with:
 
 ```bash
-cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /Users/mrslimslim/.openclaw
+cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /absolute/path/to/project
 ```
 
 To point at a different working directory:

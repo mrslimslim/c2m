@@ -3,10 +3,20 @@
 set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_RELEASE_DIR="/Users/mrslimslim/.openclaw"
+CALLER_DIR="$(pwd -P)"
+DEFAULT_RELEASE_DIR="$CALLER_DIR"
 RELEASE_DIR="${CTUNNEL_DIR:-${CODEPILOT_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}}"
 WITH_RELAY=0
 SKIP_IOS_BUILD=0
+
+resolve_dir() {
+  local path="$1"
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+    return
+  fi
+  printf '%s/%s\n' "$CALLER_DIR" "$path"
+}
 
 usage() {
   cat <<EOF
@@ -51,6 +61,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+RELEASE_DIR="$(resolve_dir "$RELEASE_DIR")"
 
 cd "$ROOT_DIR"
 

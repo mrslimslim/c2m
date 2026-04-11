@@ -53,9 +53,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
     case event(sessionId: String, event: AgentEvent, eventId: Int, timestamp: Int)
     case sessionList(sessions: [SessionInfo])
     case fileContent(path: String, content: String, language: String)
+    case fileError(sessionId: String, path: String, message: String)
     case fileSearchResults(sessionId: String, query: String, results: [FileSearchMatch])
     case diffContent(sessionId: String, eventId: Int, files: [DiffFile])
     case diffHunksContent(sessionId: String, eventId: Int, path: String, hunks: [DiffHunk], nextHunkIndex: Int?)
+    case diffError(sessionId: String, eventId: Int, path: String?, message: String)
     case pong(latencyMs: Int)
     case error(message: String)
     case sessionSyncComplete(sessionId: String, latestEventId: Int, resolvedSessionId: String?)
@@ -97,9 +99,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
         case event
         case sessionList = "session_list"
         case fileContent = "file_content"
+        case fileError = "file_error"
         case fileSearchResults = "file_search_results"
         case diffContent = "diff_content"
         case diffHunksContent = "diff_hunks_content"
+        case diffError = "diff_error"
         case pong
         case error
         case sessionSyncComplete = "session_sync_complete"
@@ -127,6 +131,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 content: try container.decode(String.self, forKey: .content),
                 language: try container.decode(String.self, forKey: .language)
             )
+        case .fileError:
+            self = .fileError(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                path: try container.decode(String.self, forKey: .path),
+                message: try container.decode(String.self, forKey: .message)
+            )
         case .fileSearchResults:
             self = .fileSearchResults(
                 sessionId: try container.decode(String.self, forKey: .sessionId),
@@ -146,6 +156,13 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
                 path: try container.decode(String.self, forKey: .path),
                 hunks: try container.decode([DiffHunk].self, forKey: .hunks),
                 nextHunkIndex: try container.decodeIfPresent(Int.self, forKey: .nextHunkIndex)
+            )
+        case .diffError:
+            self = .diffError(
+                sessionId: try container.decode(String.self, forKey: .sessionId),
+                eventId: try container.decode(Int.self, forKey: .eventId),
+                path: try container.decodeIfPresent(String.self, forKey: .path),
+                message: try container.decode(String.self, forKey: .message)
             )
         case .pong:
             self = .pong(latencyMs: try container.decode(Int.self, forKey: .latencyMs))
@@ -199,6 +216,11 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(path, forKey: .path)
             try container.encode(content, forKey: .content)
             try container.encode(language, forKey: .language)
+        case let .fileError(sessionId, path, message):
+            try container.encode(MessageType.fileError, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(path, forKey: .path)
+            try container.encode(message, forKey: .message)
         case let .fileSearchResults(sessionId, query, results):
             try container.encode(MessageType.fileSearchResults, forKey: .type)
             try container.encode(sessionId, forKey: .sessionId)
@@ -216,6 +238,12 @@ public enum BridgeMessage: Codable, Equatable, Sendable {
             try container.encode(path, forKey: .path)
             try container.encode(hunks, forKey: .hunks)
             try container.encodeIfPresent(nextHunkIndex, forKey: .nextHunkIndex)
+        case let .diffError(sessionId, eventId, path, message):
+            try container.encode(MessageType.diffError, forKey: .type)
+            try container.encode(sessionId, forKey: .sessionId)
+            try container.encode(eventId, forKey: .eventId)
+            try container.encodeIfPresent(path, forKey: .path)
+            try container.encode(message, forKey: .message)
         case let .pong(latencyMs):
             try container.encode(MessageType.pong, forKey: .type)
             try container.encode(latencyMs, forKey: .latencyMs)

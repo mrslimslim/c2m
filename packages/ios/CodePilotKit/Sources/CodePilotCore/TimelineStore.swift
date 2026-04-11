@@ -15,6 +15,20 @@ public struct TimelineStoreSnapshot: Codable, Equatable, Sendable {
 }
 
 public final class TimelineStore {
+    private enum StreamingTextKind {
+        case thinking
+        case agentMessage
+
+        func itemKind(text: String) -> TimelineItem.Kind {
+            switch self {
+            case .thinking:
+                return .thinking(text: text)
+            case .agentMessage:
+                return .agentMessage(text: text)
+            }
+        }
+    }
+
     private let lock = NSLock()
     private var sessionTimelines: [String: [TimelineItem]] = [:]
     private var transportTimelineStorage: [TimelineItem] = []
@@ -59,9 +73,12 @@ public final class TimelineStore {
                 sessionId: sessionId
             )
         case let .thinking(text):
-            appendSessionItem(
-                .init(eventId: eventId, timestamp: timestamp, kind: .thinking(text: text)),
-                sessionId: sessionId
+            upsertStreamingText(
+                sessionId: sessionId,
+                incomingText: text,
+                timestamp: timestamp,
+                eventId: eventId,
+                kind: .thinking
             )
         case let .codeChange(changes):
             appendSessionItem(
@@ -79,9 +96,12 @@ public final class TimelineStore {
                 eventId: eventId
             )
         case let .agentMessage(text):
-            appendSessionItem(
-                .init(eventId: eventId, timestamp: timestamp, kind: .agentMessage(text: text)),
-                sessionId: sessionId
+            upsertStreamingText(
+                sessionId: sessionId,
+                incomingText: text,
+                timestamp: timestamp,
+                eventId: eventId,
+                kind: .agentMessage
             )
         case let .error(message):
             appendSessionItem(
@@ -187,7 +207,7 @@ public final class TimelineStore {
                 timestamp: items[existingIndex].timestamp,
                 kind: .commandExec(
                     command: command,
-                    output: output ?? previousPayload?.output,
+                    output: mergeStreamingText(previous: previousPayload?.output, incoming: output),
                     exitCode: exitCode ?? previousPayload?.exitCode,
                     status: status
                 )
@@ -199,6 +219,41 @@ public final class TimelineStore {
                     timestamp: timestamp,
                     kind: .commandExec(command: command, output: output, exitCode: exitCode, status: status)
                 ),
+                into: &items
+            )
+        }
+
+        sessionTimelines[sessionId] = items
+    }
+
+    private func upsertStreamingText(
+        sessionId: String,
+        incomingText: String,
+        timestamp: Int,
+        eventId: Int?,
+        kind: StreamingTextKind
+    ) {
+        guard !incomingText.isEmpty else {
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        var items = sessionTimelines[sessionId, default: []]
+        if let lastIndex = items.indices.last,
+           items[lastIndex].timestamp <= timestamp,
+           let previousText = streamingText(from: items[lastIndex].kind, matching: kind)
+        {
+            let mergedText = mergeStreamingText(previous: previousText, incoming: incomingText) ?? previousText
+            items[lastIndex] = .init(
+                eventId: eventId ?? items[lastIndex].eventId,
+                timestamp: items[lastIndex].timestamp,
+                kind: kind.itemKind(text: mergedText)
+            )
+        } else {
+            insertSessionItem(
+                .init(eventId: eventId, timestamp: timestamp, kind: kind.itemKind(text: incomingText)),
                 into: &items
             )
         }
@@ -221,6 +276,42 @@ public final class TimelineStore {
             return nil
         }
         return (command, output, exitCode, status)
+    }
+
+    private func streamingText(
+        from kind: TimelineItem.Kind,
+        matching expectedKind: StreamingTextKind
+    ) -> String? {
+        switch (kind, expectedKind) {
+        case let (.agentMessage(text), .agentMessage):
+            return text
+        case let (.thinking(text), .thinking):
+            return text
+        default:
+            return nil
+        }
+    }
+
+    private func mergeStreamingText(previous: String?, incoming: String?) -> String? {
+        guard let incoming else {
+            return previous
+        }
+        guard let previous else {
+            return incoming
+        }
+        guard !incoming.isEmpty else {
+            return previous
+        }
+        if incoming == previous {
+            return previous
+        }
+        if incoming.hasPrefix(previous) {
+            return incoming
+        }
+        if previous.hasPrefix(incoming) {
+            return previous
+        }
+        return previous + incoming
     }
 
     private static func nowMillis() -> Int {

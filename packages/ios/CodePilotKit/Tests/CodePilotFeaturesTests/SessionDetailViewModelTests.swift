@@ -92,7 +92,14 @@ final class SessionDetailViewModelTests: XCTestCase {
         try viewModel.cancel()
         XCTAssertEqual(sender.messages, [.cancel(sessionId: busySession.id)])
 
-        let idleSession = makeSession(id: "session-1", state: .idle)
+        let idleSession = SessionInfo(
+            id: "session-1",
+            agentType: .codex,
+            workDir: "/tmp/repo",
+            state: .idle,
+            createdAt: 1_700_000_000,
+            lastActiveAt: 1_700_000_222
+        )
         _ = sessionStore.applySessionList([idleSession])
         try viewModel.cancel()
 
@@ -187,6 +194,42 @@ final class SessionDetailViewModelTests: XCTestCase {
 
         fileStore.routeFileContent(path: "Sources/App.swift", content: "unexpected", language: "swift")
         XCTAssertNil(viewModel.fileState(for: "Sources/App.swift"))
+    }
+
+    func testFileErrorTransitionsFileStateOutOfLoading() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .coding)
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore
+        )
+
+        try viewModel.requestFile(path: "README.md")
+        router.handle(
+            .fileError(
+                sessionId: session.id,
+                path: "README.md",
+                message: "No such file"
+            )
+        )
+
+        XCTAssertFalse(viewModel.fileState(for: "README.md")?.isLoading ?? true)
+        XCTAssertEqual(viewModel.fileState(for: "README.md")?.errorMessage, "No such file")
     }
 
     func testRequestDiffMarksLoadingAndSendsDiffRequest() throws {
@@ -337,6 +380,46 @@ final class SessionDetailViewModelTests: XCTestCase {
 
         XCTAssertEqual(viewModel.diffState(for: 42)?.files.first?.loadedHunks.count, 2)
         XCTAssertFalse(viewModel.diffState(for: 42)?.loadingMorePaths.contains("Sources/App.swift") ?? true)
+    }
+
+    func testDiffErrorTransitionsDiffStateOutOfLoading() throws {
+        let sender = MockPhoneMessageSender()
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diffStore = DiffStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .coding)
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+
+        let viewModel = SessionDetailViewModel(
+            sender: sender,
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore
+        )
+
+        try viewModel.requestDiff(eventId: 42)
+        router.handle(
+            .diffError(
+                sessionId: session.id,
+                eventId: 42,
+                path: nil,
+                message: "No event found"
+            )
+        )
+
+        XCTAssertFalse(viewModel.diffState(for: 42)?.isLoading ?? true)
+        XCTAssertEqual(viewModel.diffState(for: 42)?.errorMessage, "No event found")
     }
 
     func testSendSlashActionUsesResolvedSessionID() throws {

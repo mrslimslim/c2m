@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
@@ -26,6 +27,7 @@ const DEFAULT_APPROVAL_POLICY: codepilot_protocol::messages::ApprovalPolicy =
     codepilot_protocol::messages::ApprovalPolicy::OnRequest;
 const DEFAULT_SANDBOX_MODE: codepilot_protocol::messages::SandboxMode =
     codepilot_protocol::messages::SandboxMode::WorkspaceWrite;
+const UNSTABLE_FEATURE_WARNING_PREFIX: &str = "Under-development features enabled:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodexCommandStatus {
@@ -37,21 +39,26 @@ pub enum CodexCommandStatus {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexItem {
     AgentMessage {
+        id: String,
         text: String,
     },
     Reasoning {
+        id: String,
         text: String,
     },
     CommandExecution {
+        id: String,
         command: String,
         output: Option<String>,
         exit_code: Option<i64>,
         status: CodexCommandStatus,
     },
     FileChange {
+        id: String,
         changes: Vec<(String, String)>,
     },
     Other {
+        id: String,
         item_type: String,
         payload: serde_json::Value,
     },
@@ -88,6 +95,7 @@ pub enum CodexThreadEvent {
 #[derive(Debug, Clone)]
 struct ActiveSession {
     info: SessionInfo,
+    text_item_snapshots: HashMap<String, String>,
     options: SessionOptions,
     running_child: Option<Arc<Mutex<Child>>>,
 }
@@ -114,10 +122,7 @@ impl CodexAdapter {
     fn next_session_identity(&self) -> (String, i64) {
         let now = Self::now_ms();
         let seq = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        (
-            format!("codex-{now}-{seq:06x}"),
-            now,
-        )
+        (format!("codex-{now}-{seq:06x}"), now)
     }
 
     pub fn canonical_session_id(&self, session_id: &str) -> Option<String> {
@@ -133,7 +138,10 @@ impl CodexAdapter {
             }
             current = next;
         }
-        state.sessions.contains_key(current).then(|| current.to_owned())
+        state
+            .sessions
+            .contains_key(current)
+            .then(|| current.to_owned())
     }
 
     pub fn consume_events(
@@ -166,10 +174,14 @@ impl CodexAdapter {
                     }
                 }
                 CodexThreadEvent::TurnStarted => {}
-                CodexThreadEvent::ItemStarted { item }
-                | CodexThreadEvent::ItemUpdated { item }
-                | CodexThreadEvent::ItemCompleted { item } => {
-                    mapped.extend(Self::map_item_event(&mut session, item));
+                CodexThreadEvent::ItemStarted { item } => {
+                    mapped.extend(Self::map_item_event(&mut session, item, false));
+                }
+                CodexThreadEvent::ItemUpdated { item } => {
+                    mapped.extend(Self::map_item_event(&mut session, item, false));
+                }
+                CodexThreadEvent::ItemCompleted { item } => {
+                    mapped.extend(Self::map_item_event(&mut session, item, true));
                 }
                 CodexThreadEvent::TurnCompleted {
                     input_tokens,
@@ -186,9 +198,11 @@ impl CodexAdapter {
                             cached_input_tokens,
                         }),
                     });
+                    session.text_item_snapshots.clear();
                 }
                 CodexThreadEvent::TurnFailed { message } | CodexThreadEvent::Error { message } => {
                     session.info.state = AgentState::Error;
+                    session.text_item_snapshots.clear();
                     mapped.push(AgentEvent::Error { message });
                 }
             }
@@ -200,14 +214,31 @@ impl CodexAdapter {
         Ok(mapped)
     }
 
-    fn map_item_event(session: &mut ActiveSession, item: CodexItem) -> Vec<AgentEvent> {
+    fn map_item_event(
+        session: &mut ActiveSession,
+        item: CodexItem,
+        completed: bool,
+    ) -> Vec<AgentEvent> {
         match item {
-            CodexItem::AgentMessage { text } => vec![AgentEvent::AgentMessage { text }],
-            CodexItem::Reasoning { text } => {
+            CodexItem::AgentMessage { id, text } => Self::map_streaming_text_item(
+                &mut session.text_item_snapshots,
+                &id,
+                &text,
+                completed,
+                |text| AgentEvent::AgentMessage { text },
+            ),
+            CodexItem::Reasoning { id, text } => {
                 session.info.state = AgentState::Thinking;
-                vec![AgentEvent::Thinking { text }]
+                Self::map_streaming_text_item(
+                    &mut session.text_item_snapshots,
+                    &id,
+                    &text,
+                    completed,
+                    |text| AgentEvent::Thinking { text },
+                )
             }
             CodexItem::CommandExecution {
+                id: _,
                 command,
                 output,
                 exit_code,
@@ -225,13 +256,16 @@ impl CodexAdapter {
                     },
                 }]
             }
-            CodexItem::FileChange { changes } => {
+            CodexItem::FileChange { id: _, changes } => {
                 session.info.state = AgentState::Coding;
                 vec![AgentEvent::CodeChange {
                     changes: changes
                         .into_iter()
                         .map(|(path, kind)| FileChange {
-                            path,
+                            path: Self::normalize_file_change_path(
+                                &session.options.work_dir,
+                                &path,
+                            ),
                             kind: match kind.as_str() {
                                 "add" => FileChangeKind::Add,
                                 "delete" => FileChangeKind::Delete,
@@ -241,11 +275,90 @@ impl CodexAdapter {
                         .collect(),
                 }]
             }
-            CodexItem::Other { item_type, payload } => vec![AgentEvent::Status {
-                state: session.info.state,
-                message: format!("[{item_type}] {}", payload),
-            }],
+            CodexItem::Other {
+                id: _,
+                item_type,
+                payload,
+            } => {
+                if Self::should_ignore_item(&item_type, &payload) {
+                    Vec::new()
+                } else {
+                    vec![AgentEvent::Status {
+                        state: session.info.state,
+                        message: format!("[{item_type}] {}", payload),
+                    }]
+                }
+            }
         }
+    }
+
+    fn map_streaming_text_item(
+        snapshots: &mut HashMap<String, String>,
+        item_id: &str,
+        incoming_text: &str,
+        completed: bool,
+        map_event: impl FnOnce(String) -> AgentEvent,
+    ) -> Vec<AgentEvent> {
+        let previous_text = if item_id.is_empty() {
+            None
+        } else {
+            snapshots.get(item_id).cloned()
+        };
+
+        let delta = match previous_text.as_deref() {
+            Some(previous) if incoming_text == previous => String::new(),
+            Some(previous) if incoming_text.starts_with(previous) => {
+                incoming_text[previous.len()..].to_owned()
+            }
+            _ => incoming_text.to_owned(),
+        };
+
+        if !item_id.is_empty() {
+            if completed {
+                snapshots.remove(item_id);
+            } else {
+                snapshots.insert(item_id.to_owned(), incoming_text.to_owned());
+            }
+        }
+
+        if delta.is_empty() {
+            Vec::new()
+        } else {
+            vec![map_event(delta)]
+        }
+    }
+
+    fn should_ignore_item(item_type: &str, payload: &Value) -> bool {
+        if item_type != "error" {
+            return false;
+        }
+
+        payload
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.starts_with(UNSTABLE_FEATURE_WARNING_PREFIX))
+    }
+
+    fn normalize_file_change_path(work_dir: &Path, path: &str) -> String {
+        let candidate = Path::new(path);
+        if !candidate.is_absolute() {
+            return path.to_owned();
+        }
+
+        let canonical_work_dir =
+            std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
+        let resolved = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+        resolved
+            .strip_prefix(&canonical_work_dir)
+            .ok()
+            .map(|relative| {
+                relative
+                    .to_string_lossy()
+                    .trim_start_matches('/')
+                    .to_owned()
+            })
+            .filter(|relative| !relative.is_empty())
+            .unwrap_or_else(|| path.to_owned())
     }
 
     fn resolved_options(options: SessionOptions) -> SessionOptions {
@@ -296,6 +409,8 @@ impl CodexAdapter {
             args.push("--model".to_owned());
             args.push(model.clone());
         }
+        args.push("--config".to_owned());
+        args.push("suppress_unstable_features_warning=true".to_owned());
         if let Some(sandbox_mode) = options.sandbox_mode
             && !Self::should_bypass_approvals_and_sandbox(options)
         {
@@ -356,10 +471,7 @@ impl CodexAdapter {
 
         let value: Value =
             serde_json::from_str(trimmed).map_err(|error| AgentError::new(error.to_string()))?;
-        let Some(event_type) = value
-            .get("type")
-            .and_then(Value::as_str)
-        else {
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
             return Ok(None);
         };
 
@@ -416,6 +528,11 @@ impl CodexAdapter {
     }
 
     fn parse_item(value: Value) -> CodexItem {
+        let item_id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         let item_type = value
             .get("type")
             .and_then(Value::as_str)
@@ -424,6 +541,7 @@ impl CodexAdapter {
 
         match item_type.as_str() {
             "agent_message" => CodexItem::AgentMessage {
+                id: item_id.clone(),
                 text: value
                     .get("text")
                     .and_then(Value::as_str)
@@ -431,6 +549,7 @@ impl CodexAdapter {
                     .to_owned(),
             },
             "reasoning" => CodexItem::Reasoning {
+                id: item_id.clone(),
                 text: value
                     .get("text")
                     .and_then(Value::as_str)
@@ -438,6 +557,7 @@ impl CodexAdapter {
                     .to_owned(),
             },
             "command_execution" => CodexItem::CommandExecution {
+                id: item_id.clone(),
                 command: value
                     .get("command")
                     .and_then(Value::as_str)
@@ -486,9 +606,13 @@ impl CodexAdapter {
                         )
                     })
                     .collect();
-                CodexItem::FileChange { changes }
+                CodexItem::FileChange {
+                    id: item_id.clone(),
+                    changes,
+                }
             }
             _ => CodexItem::Other {
+                id: item_id,
                 item_type,
                 payload: value,
             },
@@ -526,6 +650,7 @@ impl AgentAdapter for CodexAdapter {
             id.clone(),
             ActiveSession {
                 info: info.clone(),
+                text_item_snapshots: HashMap::new(),
                 options: resolved,
                 running_child: None,
             },
@@ -671,7 +796,8 @@ impl AgentAdapter for CodexAdapter {
             .map_err(|_| AgentError::new("failed to lock codex adapter state"))?;
         let canonical = Self::canonical_session_id_locked(&state, session_id)
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))?;
-        state.sessions
+        state
+            .sessions
             .get(&canonical)
             .map(|session| session.info.clone())
             .ok_or_else(|| AgentError::new(format!("session not found: {session_id}")))
@@ -728,6 +854,8 @@ impl AgentAdapter for CodexAdapter {
 #[cfg(test)]
 mod tests {
     use super::{CodexAdapter, CodexThreadEvent};
+    use crate::types::SessionOptions;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_thread_event_accepts_turn_started_events_from_codex_cli() {
@@ -741,9 +869,8 @@ mod tests {
 
     #[test]
     fn parse_thread_event_ignores_unknown_event_types_from_codex_cli() {
-        let parsed = CodexAdapter::parse_thread_event(
-            r#"{"type":"turn.progress","message":"streaming"}"#,
-        );
+        let parsed =
+            CodexAdapter::parse_thread_event(r#"{"type":"turn.progress","message":"streaming"}"#);
 
         assert!(
             matches!(parsed, Ok(None)),
@@ -758,6 +885,27 @@ mod tests {
         assert!(
             matches!(parsed, Ok(None)),
             "expected non-JSON lines to be ignored, got {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn command_args_suppress_unstable_feature_warnings() {
+        let args = CodexAdapter::command_args(
+            &SessionOptions {
+                work_dir: PathBuf::from("/tmp/project"),
+                model: None,
+                model_reasoning_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            },
+            None,
+        );
+
+        assert!(
+            args.windows(2).any(|window| {
+                window == ["--config", "suppress_unstable_features_warning=true"]
+            }),
+            "expected command args to suppress unstable feature warnings, got {args:?}"
         );
     }
 }

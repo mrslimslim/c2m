@@ -288,6 +288,12 @@ pub enum BridgeMessage {
         content: String,
         language: String,
     },
+    FileError {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        path: String,
+        message: String,
+    },
     FileSearchResults {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -333,6 +339,15 @@ pub enum BridgeMessage {
             skip_serializing_if = "Option::is_none"
         )]
         next_hunk_index: Option<u64>,
+    },
+    DiffError {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+        #[serde(rename = "eventId")]
+        event_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        message: String,
     },
     SlashCatalog {
         capability: String,

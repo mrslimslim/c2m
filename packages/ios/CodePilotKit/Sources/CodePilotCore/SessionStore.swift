@@ -116,13 +116,12 @@ public final class SessionStore {
         }
         for (id, incoming) in incomingById {
             if let existing = previousById[id] ?? previousById[remaps.first(where: { $0.to == id })?.from ?? ""] {
-                // Prefer the more recent terminal/busy state during reconnect merges.
-                // session_list can lag behind events, but restored local snapshots can also
-                // lag behind a session that is still actively running on the bridge.
-                let localIsTerminal = existing.state == .idle || existing.state == .error
-                let incomingIsBusy = incoming.state == .thinking || incoming.state == .coding
-                    || incoming.state == .runningCommand || incoming.state == .waitingApproval
-                if localIsTerminal && incomingIsBusy && existing.lastActiveAt >= incoming.lastActiveAt {
+                // Prefer the more recent busy/terminal state during reconnect merges.
+                // session_list can lag behind streaming events, but restored local state can
+                // also be older than a bridge that is still actively running.
+                if existing.lastActiveAt >= incoming.lastActiveAt,
+                   isBusy(existing.state) != isBusy(incoming.state)
+                {
                     merged[id] = SessionInfo(
                         id: incoming.id,
                         agentType: incoming.agentType,
@@ -414,6 +413,15 @@ public final class SessionStore {
             return lhs.createdAt > rhs.createdAt
         }
         return lhs.id < rhs.id
+    }
+
+    private func isBusy(_ state: AgentState) -> Bool {
+        switch state {
+        case .thinking, .coding, .runningCommand, .waitingApproval:
+            return true
+        case .idle, .error:
+            return false
+        }
     }
 
     private func placeholderSession(id: String, state: AgentState) -> SessionInfo {

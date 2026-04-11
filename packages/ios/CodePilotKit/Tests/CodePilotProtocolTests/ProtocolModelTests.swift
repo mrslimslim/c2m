@@ -170,6 +170,15 @@ final class ProtocolModelTests: XCTestCase {
         )
         try assertRoundTrip(
             BridgeMessage.self,
+            json: #"{"type":"file_error","sessionId":"session-1","path":"README.md","message":"No such file or directory"}"#,
+            expected: .fileError(
+                sessionId: "session-1",
+                path: "README.md",
+                message: "No such file or directory"
+            )
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
             json: #"{"type":"file_search_results","sessionId":"session-1","query":"turnview","results":[{"path":"Sources/TurnView.swift","displayName":"TurnView.swift","directoryHint":"Sources"}]}"#,
             expected: .fileSearchResults(
                 sessionId: "session-1",
@@ -230,6 +239,26 @@ final class ProtocolModelTests: XCTestCase {
                     ),
                 ],
                 nextHunkIndex: 2
+            )
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"diff_error","sessionId":"session-1","eventId":42,"message":"No event found"}"#,
+            expected: .diffError(
+                sessionId: "session-1",
+                eventId: 42,
+                path: nil,
+                message: "No event found"
+            )
+        )
+        try assertRoundTrip(
+            BridgeMessage.self,
+            json: #"{"type":"diff_error","sessionId":"session-1","eventId":42,"path":"Sources/App.swift","message":"No diff file found"}"#,
+            expected: .diffError(
+                sessionId: "session-1",
+                eventId: 42,
+                path: "Sources/App.swift",
+                message: "No diff file found"
             )
         )
         try assertRoundTrip(

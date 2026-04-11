@@ -6,8 +6,8 @@
 
 ## 适用范围
 
-- 默认命令执行目录：`/Users/mrslimslim/dev/c2m`
-- 本次核心上线路径：`cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /Users/mrslimslim/.openclaw`
+- 默认命令执行目录：仓库根目录
+- 本次核心上线路径示例：`cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /absolute/path/to/project`
 - 本清单默认只把 `codex` 路径视为阻断项，不把 `claude` 作为本轮上线门禁
 - 本清单默认把 `Relay Worker` 视为可选附录；只有本轮也要发布 relay 时才执行附录中的步骤
 - 完整 iOS 人工回归矩阵见 `docs/ios-testing.md`；本清单只保留上线前必须逐项通过的门禁
@@ -27,7 +27,7 @@
 - [ ] Rust 核心构建与测试通过
 - [ ] iOS Swift package tests 通过
 - [ ] iOS app simulator build 通过
-- [ ] `cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /Users/mrslimslim/.openclaw` 可以稳定启动
+- [ ] `cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /absolute/path/to/project` 可以稳定启动
 - [ ] Bridge 终端能输出二维码、pairing payload 和有效的 tunnel URL
 - [ ] iPhone 真机能通过 tunnel 路径完成配对、建会话、继续会话、取消 busy turn、请求文件、查看 diff、重启后恢复连接
 - [ ] Diagnostics 中不泄露 `token`、`otp`、ciphertext 等敏感值
@@ -52,7 +52,7 @@ pwd
 
 预期结果：
 
-- 输出 `/Users/mrslimslim/dev/c2m`
+- 输出当前仓库根目录的绝对路径
 
 逐项检查本轮上线所需依赖：
 
@@ -157,7 +157,7 @@ cargo build -p codepilot-relay-worker --target wasm32-unknown-unknown
 保持一个专门的终端窗口运行 bridge，不要在验证完成前关闭它：
 
 ```bash
-cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /Users/mrslimslim/.openclaw
+cargo run -p codepilot-bridge -- --agent codex --tunnel --dir /absolute/path/to/project
 ```
 
 等价封装命令：
@@ -169,7 +169,7 @@ ctunnel
 ### 4.1 启动输出
 
 - [ ] 终端成功打印 `CTunnel Bridge v0.1.0`
-- [ ] 终端打印 `Working directory: /Users/mrslimslim/.openclaw`
+- [ ] 终端打印 `Working directory: /absolute/path/to/project`
 - [ ] 终端打印 `Agent: codex`
 - [ ] 终端打印 `Tunnel URL: https://<something>.trycloudflare.com`
 - [ ] 终端渲染二维码
@@ -245,7 +245,7 @@ ctunnel
 
 操作：
 
-- [ ] 在会话中请求读取 `/Users/mrslimslim/.openclaw` 内一个已知可读文件
+- [ ] 在会话中请求读取当前项目目录内一个已知可读文件
 - [ ] 在客户端中打开返回的文件内容
 
 建议：
@@ -256,7 +256,7 @@ ctunnel
 
 - 文件请求成功返回
 - 文件内容与实际磁盘内容一致
-- 没有跨目录读到 `.openclaw` 之外的文件
+- 没有跨目录读到当前项目目录之外的文件
 
 ### 4.7 Diff Viewer
 

@@ -188,6 +188,107 @@ final class SessionRoutingTests: XCTestCase {
         XCTAssertNil(diffStore.state(for: "session-1", eventId: 42)?.files.first?.nextHunkIndex)
     }
 
+    func testFileErrorRoutingClearsLoadingState() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+
+        fileStore.markRequested(path: "README.md", sessionId: "session-1")
+        router.handle(
+            .fileError(
+                sessionId: "session-1",
+                path: "README.md",
+                message: "No such file"
+            )
+        )
+
+        XCTAssertFalse(fileStore.fileState(for: "README.md", sessionId: "session-1")?.isLoading ?? true)
+        XCTAssertEqual(
+            fileStore.fileState(for: "README.md", sessionId: "session-1")?.errorMessage,
+            "No such file"
+        )
+    }
+
+    func testDiffErrorRoutingClearsLoadingStateForInitialAndPagedRequests() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diffStore = DiffStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diffStore: diffStore,
+            diagnostics: diagnostics
+        )
+
+        diffStore.markRequested(sessionId: "session-1", eventId: 42)
+        router.handle(
+            .diffError(
+                sessionId: "session-1",
+                eventId: 42,
+                path: nil,
+                message: "No event found"
+            )
+        )
+
+        XCTAssertFalse(diffStore.state(for: "session-1", eventId: 42)?.isLoading ?? true)
+        XCTAssertEqual(diffStore.state(for: "session-1", eventId: 42)?.errorMessage, "No event found")
+
+        diffStore.routeDiffContent(
+            sessionId: "session-1",
+            eventId: 42,
+            files: [
+                .init(
+                    path: "Sources/App.swift",
+                    kind: .update,
+                    addedLines: 1,
+                    deletedLines: 1,
+                    isTruncated: false,
+                    totalHunkCount: 2,
+                    loadedHunks: [
+                        .init(
+                            oldStart: 1,
+                            oldLineCount: 1,
+                            newStart: 1,
+                            newLineCount: 2,
+                            lines: [
+                                .init(kind: .delete, text: "-let value = 1"),
+                                .init(kind: .add, text: "+let value = 2"),
+                            ]
+                        )
+                    ],
+                    nextHunkIndex: 1
+                )
+            ]
+        )
+        diffStore.markLoadingMore(sessionId: "session-1", eventId: 42, path: "Sources/App.swift")
+        router.handle(
+            .diffError(
+                sessionId: "session-1",
+                eventId: 42,
+                path: "Sources/App.swift",
+                message: "No diff file found"
+            )
+        )
+
+        XCTAssertFalse(
+            diffStore.state(for: "session-1", eventId: 42)?.loadingMorePaths.contains("Sources/App.swift") ?? true
+        )
+        XCTAssertEqual(
+            diffStore.state(for: "session-1", eventId: 42)?.fileErrorsByPath["Sources/App.swift"],
+            "No diff file found"
+        )
+    }
+
     func testRouterRoutesFileSearchResultsToStore() {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
@@ -542,6 +643,64 @@ final class SessionRoutingTests: XCTestCase {
 
         XCTAssertEqual(timelineStore.transportTimeline.map(\.kind), [.transportError(message: "bridge disconnected")])
         XCTAssertEqual(timelineStore.timeline(for: session.id).map(\.kind), [.sessionError(message: "command failed")])
+    }
+
+    func testAgentMessageKeepsSessionBusyAfterCommandCompletion() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(
+            .event(
+                sessionId: session.id,
+                event: .commandExec(command: "swift test", output: "ok", exitCode: 0, status: .done),
+                eventId: 1,
+                timestamp: 1
+            )
+        )
+        XCTAssertEqual(sessionStore.session(for: session.id)?.state, .thinking)
+
+        router.handle(
+            .event(
+                sessionId: session.id,
+                event: .agentMessage(text: "Continuing with the summary"),
+                eventId: 2,
+                timestamp: 2
+            )
+        )
+
+        XCTAssertEqual(sessionStore.session(for: session.id)?.state, .thinking)
+    }
+
+    func testAgentMessageClearsTransientErrorStateWhenStreamingResumes() {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let diagnostics = DiagnosticsStore()
+        let router = SessionMessageRouter(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            diagnostics: diagnostics
+        )
+        let session = makeSession(id: "session-1", state: .thinking, createdAt: 1_700_000_000, lastActiveAt: 1_700_000_001)
+        router.handle(.sessionList(sessions: [session]))
+
+        router.handle(.event(sessionId: session.id, event: .error(message: "transient"), eventId: 1, timestamp: 1))
+        XCTAssertEqual(sessionStore.session(for: session.id)?.state, .error)
+
+        router.handle(.event(sessionId: session.id, event: .agentMessage(text: "Still working"), eventId: 2, timestamp: 2))
+
+        XCTAssertEqual(sessionStore.session(for: session.id)?.state, .thinking)
     }
 }
 

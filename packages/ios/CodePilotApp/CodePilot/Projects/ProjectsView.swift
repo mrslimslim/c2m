@@ -126,6 +126,7 @@ struct ProjectsView: View {
                             sessionCount: appModel.sessionsForConnection(saved.id).count
                         )
                     }
+                    .accessibilityIdentifier("project.card.\(saved.id)")
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button {

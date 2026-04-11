@@ -88,6 +88,11 @@ public final class SessionMessageRouter {
             )
             diagnostics.recordInfo("file_content:\(path)")
 
+        case let .fileError(sessionId, path, message):
+            let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            fileStore.markRequestFailed(path: path, sessionId: targetSessionId, message: message)
+            diagnostics.recordError("file_error:\(sessionId):\(path):\(message)")
+
         case let .fileSearchResults(sessionId, query, results):
             let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
             fileSearchStore.routeResults(sessionId: targetSessionId, query: query, results: results)
@@ -108,6 +113,25 @@ public final class SessionMessageRouter {
                 nextHunkIndex: nextHunkIndex
             )
             diagnostics.recordInfo("diff_hunks_content:\(sessionId):\(eventId):\(path):\(hunks.count)")
+
+        case let .diffError(sessionId, eventId, path, message):
+            let targetSessionId = sessionStore.resolvedSessionId(for: sessionId) ?? sessionId
+            if let path {
+                diffStore.markLoadingMoreFailed(
+                    sessionId: targetSessionId,
+                    eventId: eventId,
+                    path: path,
+                    message: message
+                )
+                diagnostics.recordError("diff_error:\(sessionId):\(eventId):\(path):\(message)")
+            } else {
+                diffStore.markRequestFailed(
+                    sessionId: targetSessionId,
+                    eventId: eventId,
+                    message: message
+                )
+                diagnostics.recordError("diff_error:\(sessionId):\(eventId):\(message)")
+            }
 
         case let .pong(latencyMs):
             diagnostics.recordInfo("pong:\(latencyMs)ms")
@@ -144,28 +168,35 @@ public final class SessionMessageRouter {
     }
 
     private func applySessionState(event: AgentEvent, sessionId: String) {
+        guard let state = displayState(for: event) else {
+            return
+        }
+        sessionStore.updateState(for: sessionId, state: state)
+    }
+
+    private func displayState(for event: AgentEvent) -> AgentState? {
         switch event {
         case let .status(state, _):
-            sessionStore.updateState(for: sessionId, state: state)
+            return state
         case .thinking:
-            sessionStore.updateState(for: sessionId, state: .thinking)
+            return .thinking
         case .codeChange:
-            sessionStore.updateState(for: sessionId, state: .coding)
+            return .coding
         case let .commandExec(_, _, _, status):
             switch status {
             case .running:
-                sessionStore.updateState(for: sessionId, state: .runningCommand)
-            case .done:
-                sessionStore.updateState(for: sessionId, state: .idle)
-            case .failed:
-                sessionStore.updateState(for: sessionId, state: .error)
+                return .runningCommand
+            case .done, .failed:
+                // Command completion does not necessarily end the turn. Codex can
+                // continue streaming text immediately afterwards.
+                return .thinking
             }
         case .agentMessage:
-            break
+            return .thinking
         case .turnCompleted:
-            sessionStore.updateState(for: sessionId, state: .idle)
+            return .idle
         case .error:
-            sessionStore.updateState(for: sessionId, state: .error)
+            return .error
         }
     }
 

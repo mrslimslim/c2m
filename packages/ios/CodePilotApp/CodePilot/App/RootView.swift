@@ -76,6 +76,14 @@ final class AppModel: ObservableObject {
     private var slots: [String: ConnectionSlot] = [:]
     private var sessionToSlotID: [String: String] = [:]
     private var pingTimer: Timer?
+    private let conversationPersistenceQueue = DispatchQueue(
+        label: "ctunnel.conversation-persistence",
+        qos: .utility
+    )
+    private var pendingConversationPersistenceWorkItem: DispatchWorkItem?
+    #if DEBUG
+    private var uiTestHarness: AnyObject?
+    #endif
 
     // Fallback stub sender for preview / offline use
     private var stubSender: InMemoryPhoneMessageSender?
@@ -809,7 +817,7 @@ final class AppModel: ObservableObject {
             slot.router.handle(message)
             handleReplayProtocolErrorIfNeeded(slotID: slotID, message: errorMessage)
 
-        case .fileContent, .fileSearchResults, .diffContent, .diffHunksContent, .pong, .slashCatalog, .slashActionResult:
+        case .fileContent, .fileError, .fileSearchResults, .diffContent, .diffHunksContent, .diffError, .pong, .slashCatalog, .slashActionResult:
             slot.router.handle(message)
             break
         }
@@ -884,18 +892,27 @@ final class AppModel: ObservableObject {
     private func persistConversationState() {
         guard persistsConversationState else { return }
 
-        do {
-            try conversationSnapshotStore.saveSnapshot(
-                .init(
-                    sessionStore: sessionStore.snapshot(),
-                    timelineStore: timelineStore.snapshot(),
-                    fileStore: fileStore.snapshot(),
-                    sessionToConnectionID: sessionToSlotID
-                )
-            )
-        } catch {
-            diagnosticsStore.recordError("save conversation snapshot failed: \(error.localizedDescription)")
+        let snapshot = ConversationSnapshot(
+            sessionStore: sessionStore.snapshot(),
+            timelineStore: timelineStore.snapshot(),
+            fileStore: fileStore.snapshot(),
+            sessionToConnectionID: sessionToSlotID
+        )
+        let store = conversationSnapshotStore
+        let diagnostics = diagnosticsStore
+
+        pendingConversationPersistenceWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            do {
+                try store.saveSnapshot(snapshot)
+            } catch {
+                Task { @MainActor in
+                    diagnostics.recordError("save conversation snapshot failed: \(error.localizedDescription)")
+                }
+            }
         }
+        pendingConversationPersistenceWorkItem = workItem
+        conversationPersistenceQueue.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     private func knownSessionIDs(for connectionID: String) -> [String] {
@@ -1233,6 +1250,91 @@ private final class InMemoryPhoneMessageSender: PhoneMessageSending {
 
 #if DEBUG
 extension AppModel {
+    static func uiTestFixtureIfRequested(arguments: [String]) -> AppModel? {
+        guard arguments.contains(UITestLaunchArgument.streaming.rawValue) else {
+            return nil
+        }
+        return uiTestStreamingFixture()
+    }
+
+    static func uiTestStreamingFixture() -> AppModel {
+        let sessionStore = SessionStore()
+        let timelineStore = TimelineStore()
+        let fileStore = FileStore()
+        let fileSearchStore = FileSearchStore()
+        let diffStore = DiffStore()
+        let diagnosticsStore = DiagnosticsStore()
+        let slashCatalogStore = SlashCatalogStore()
+        let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
+        let suiteName = "AppModelUITest.\(UUID().uuidString)"
+        let previewDefaults = UserDefaults(suiteName: suiteName) ?? .standard
+        let previewSecretStore = KeychainSecretStore(service: "com.ctunnel.uitest.\(UUID().uuidString)")
+        let savedConnectionStore = SavedConnectionStore(
+            userDefaults: previewDefaults,
+            secretStore: previewSecretStore
+        )
+        let conversationSnapshotStore = ConversationSnapshotStore(userDefaults: previewDefaults)
+        let connectionsViewModel = ConnectionsViewModel(savedConnections: AppUITestFixtures.savedConnections.connections)
+        _ = connectionsViewModel.selectSavedConnection(id: AppUITestFixtures.savedConnections.selectedConnectionID)
+        let session = AppUITestFixtures.makeSession()
+        let stubSender = InMemoryPhoneMessageSender()
+
+        _ = sessionStore.applySessionList([session])
+        sessionStore.setActiveSession(id: session.id)
+        diagnosticsStore.recordInfo("[ui-test] streaming fixture booted")
+
+        let model = AppModel(
+            sessionStore: sessionStore,
+            timelineStore: timelineStore,
+            fileStore: fileStore,
+            fileSearchStore: fileSearchStore,
+            diffStore: diffStore,
+            diagnosticsStore: diagnosticsStore,
+            slashCatalogStore: slashCatalogStore,
+            diagnosticsViewModel: diagnosticsViewModel,
+            savedConnectionStore: savedConnectionStore,
+            conversationSnapshotStore: conversationSnapshotStore,
+            stubSender: stubSender,
+            connectionsViewModel: connectionsViewModel,
+            pendingSessionCoordinator: PendingSessionCoordinator(),
+            sessionReplayCoordinator: SessionReplayCoordinator(),
+            currentConnectionSummary: AppUITestFixtures.currentConnectionSummary,
+            latestErrorMessage: nil,
+            persistsSavedConnections: false,
+            persistsConversationState: false
+        )
+        model.seedPreviewMappings(
+            sessionToSlot: [session.id: AppUITestFixtures.connectionID],
+            slotStates: [AppUITestFixtures.connectionID: "Connected (encrypted)"]
+        )
+
+        let harness = UITestStreamingHarness(model: model, sessionID: session.id)
+        harness.install(on: stubSender)
+        model.uiTestHarness = harness
+        return model
+    }
+
+    func uiTestApply(
+        event: AgentEvent? = nil,
+        sessionState: AgentState? = nil,
+        sessionID: String,
+        timestamp: Int? = nil,
+        eventId: Int? = nil
+    ) {
+        if let event, let timestamp {
+            timelineStore.appendBridgeEvent(
+                sessionId: sessionID,
+                event: event,
+                timestamp: timestamp,
+                eventId: eventId
+            )
+        }
+        if let sessionState {
+            sessionStore.updateState(for: sessionID, state: sessionState)
+        }
+        refreshPublishedState()
+    }
+
     static func previewFixture() -> AppModel {
         let sessionStore = SessionStore()
         let timelineStore = TimelineStore()
@@ -1304,6 +1406,179 @@ extension AppModel {
     }
 }
 
+private enum UITestLaunchArgument: String {
+    case streaming = "--uitest-streaming"
+}
+
+private enum AppUITestFixtures {
+    static let connectionID = "ui-test-streaming"
+    static let sessionID = "ui-test-session"
+    static let currentConnectionSummary = "Connected (encrypted)"
+
+    static let savedConnections = SavedConnectionsSnapshot(
+        connections: [
+            .init(
+                id: connectionID,
+                name: "UI Test Streaming",
+                config: .lan(
+                    host: "ui-test.local",
+                    port: 19260,
+                    token: "",
+                    bridgePublicKey: "ui-test-bridge-public-key",
+                    otp: "112233"
+                )
+            )
+        ],
+        selectedConnectionID: connectionID
+    )
+
+    static func makeSession(nowMillis: Int = Int(Date().timeIntervalSince1970 * 1_000)) -> SessionInfo {
+        .init(
+            id: sessionID,
+            agentType: .codex,
+            workDir: "/tmp/ctunnel/ui-test-streaming",
+            state: .idle,
+            createdAt: nowMillis - 60_000,
+            lastActiveAt: nowMillis - 60_000
+        )
+    }
+}
+
+@MainActor
+private final class UITestStreamingHarness {
+    private weak var model: AppModel?
+    private let sessionID: String
+    private var pendingWorkItems: [DispatchWorkItem] = []
+    private var nextEventID = 1
+
+    init(model: AppModel, sessionID: String) {
+        self.model = model
+        self.sessionID = sessionID
+    }
+
+    func install(on sender: InMemoryPhoneMessageSender) {
+        sender.onSend = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.handle(message)
+            }
+        }
+    }
+
+    private func handle(_ message: PhoneMessage) {
+        switch message {
+        case let .command(_, incomingSessionID, _):
+            guard incomingSessionID == sessionID else {
+                return
+            }
+            streamReply()
+        case let .cancel(incomingSessionID):
+            guard incomingSessionID == sessionID else {
+                return
+            }
+            cancelStream(markTurnCompleted: true)
+        default:
+            break
+        }
+    }
+
+    private func streamReply() {
+        cancelStream(markTurnCompleted: false)
+        guard let model else {
+            return
+        }
+
+        let start = nowMillis()
+        model.uiTestApply(
+            event: .thinking(text: "Drafting a streamed CTunnel reply"),
+            sessionState: .thinking,
+            sessionID: sessionID,
+            timestamp: start,
+            eventId: takeEventID()
+        )
+
+        schedule(after: 0.10) { [weak self] in
+            guard let self, let model = self.model else { return }
+            model.uiTestApply(
+                event: .agentMessage(text: "H"),
+                sessionState: .coding,
+                sessionID: self.sessionID,
+                timestamp: start + 100,
+                eventId: self.takeEventID()
+            )
+        }
+
+        schedule(after: 1.00) { [weak self] in
+            guard let self, let model = self.model else { return }
+            model.uiTestApply(
+                event: .agentMessage(text: "Hello"),
+                sessionState: .coding,
+                sessionID: self.sessionID,
+                timestamp: start + 1_000,
+                eventId: self.takeEventID()
+            )
+        }
+
+        schedule(after: 3.00) { [weak self] in
+            guard let self, let model = self.model else { return }
+            model.uiTestApply(
+                event: .agentMessage(text: ", CTunnel."),
+                sessionState: .coding,
+                sessionID: self.sessionID,
+                timestamp: start + 3_000,
+                eventId: self.takeEventID()
+            )
+        }
+
+        schedule(after: 3.25) { [weak self] in
+            guard let self, let model = self.model else { return }
+            model.uiTestApply(
+                event: .turnCompleted(summary: "Turn completed", filesChanged: [], usage: nil),
+                sessionState: .idle,
+                sessionID: self.sessionID,
+                timestamp: start + 3_250,
+                eventId: self.takeEventID()
+            )
+            self.pendingWorkItems.removeAll()
+        }
+    }
+
+    private func cancelStream(markTurnCompleted: Bool) {
+        pendingWorkItems.forEach { $0.cancel() }
+        pendingWorkItems.removeAll()
+
+        guard markTurnCompleted, let model else {
+            return
+        }
+
+        model.uiTestApply(
+            event: .turnCompleted(summary: "Cancelled", filesChanged: [], usage: nil),
+            sessionState: .idle,
+            sessionID: sessionID,
+            timestamp: nowMillis(),
+            eventId: takeEventID()
+        )
+    }
+
+    private func schedule(after delay: TimeInterval, action: @escaping @MainActor () -> Void) {
+        let workItem = DispatchWorkItem {
+            Task { @MainActor in
+                action()
+            }
+        }
+        pendingWorkItems.append(workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func takeEventID() -> Int {
+        defer { nextEventID += 1 }
+        return nextEventID
+    }
+
+    private func nowMillis() -> Int {
+        Int(Date().timeIntervalSince1970 * 1_000)
+    }
+}
+
 enum AppPreviewFixtures {
     static let primarySessionID = "session-preview-primary"
 
@@ -1338,7 +1613,7 @@ enum AppPreviewFixtures {
         .init(
             id: primarySessionID,
             agentType: .codex,
-            workDir: "/Users/tengyu/Development/c2m",
+            workDir: "/preview/ctunnel",
             state: .coding,
             createdAt: 1_742_281_200_000,
             lastActiveAt: 1_742_281_560_000
@@ -1346,7 +1621,7 @@ enum AppPreviewFixtures {
         .init(
             id: "session-preview-secondary",
             agentType: .claude,
-            workDir: "/Users/tengyu/Development/c2m/packages/ios",
+            workDir: "/preview/ctunnel/packages/ios",
             state: .thinking,
             createdAt: 1_742_280_900_000,
             lastActiveAt: 1_742_281_000_000
@@ -1354,7 +1629,7 @@ enum AppPreviewFixtures {
     ]
 
     static let previewFile = FileState(
-        path: "/Users/tengyu/Development/c2m/README.md",
+        path: "/preview/ctunnel/README.md",
         content: "# CTunnel iOS Preview\n\nThis file is shown inside the SwiftUI Canvas preview.",
         language: "markdown",
         isLoading: false

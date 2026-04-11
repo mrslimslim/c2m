@@ -11,8 +11,6 @@ done
 
 BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
-DEFAULT_RELEASE_DIR="/Users/mrslimslim/.openclaw"
-RELEASE_DIR="${CTUNNEL_DIR:-${CODEPILOT_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}}"
 
 usage() {
   cat <<EOF
@@ -30,7 +28,9 @@ Commands:
 
 Environment:
   CTUNNEL_DIR   Override the bridge working directory.
-                Default: $RELEASE_DIR
+                Default: current working directory
+  CODEPILOT_RELEASE_DIR
+                Legacy alias for CTUNNEL_DIR
 EOF
 }
 
