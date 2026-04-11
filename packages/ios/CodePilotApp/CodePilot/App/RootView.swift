@@ -1345,7 +1345,7 @@ extension AppModel {
         let slashCatalogStore = SlashCatalogStore()
         let diagnosticsViewModel = DiagnosticsViewModel(diagnosticsStore: diagnosticsStore)
         let previewDefaults = UserDefaults(suiteName: "AppModelPreview.\(UUID().uuidString)") ?? .standard
-        let previewSecretStore = KeychainSecretStore(service: "com.codepilot.preview.\(UUID().uuidString)")
+        let previewSecretStore = KeychainSecretStore(service: "com.ctunnel.preview.\(UUID().uuidString)")
         let savedConnectionStore = SavedConnectionStore(
             userDefaults: previewDefaults,
             secretStore: previewSecretStore

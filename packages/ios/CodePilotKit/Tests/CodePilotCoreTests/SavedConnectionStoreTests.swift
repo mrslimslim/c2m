@@ -32,6 +32,27 @@ final class SavedConnectionStoreTests: XCTestCase {
         XCTAssertNil(try storeA.secret(for: account))
     }
 
+    func testDefaultStoreReadsSecretsFromLegacyCodePilotService() throws {
+        let account = "saved_connection.lan-office.otp"
+        let legacyStore = KeychainSecretStore(
+            service: "com.codepilot.saved-connections",
+            legacyServices: []
+        )
+        let migratedStore = KeychainSecretStore(
+            service: "com.ctunnel.saved-connections",
+            legacyServices: ["com.codepilot.saved-connections"]
+        )
+
+        try legacyStore.removeSecret(for: account)
+        try migratedStore.removeSecret(for: account)
+        try legacyStore.setSecret("654321", for: account)
+
+        XCTAssertEqual(try migratedStore.secret(for: account), "654321")
+
+        try migratedStore.removeSecret(for: account)
+        XCTAssertNil(try legacyStore.secret(for: account))
+    }
+
     func testSaveAndLoadSnapshotSeparatesMetadataFromSecrets() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
         let secretStore = KeychainSecretStore(service: keychainServiceName)
@@ -112,5 +133,55 @@ final class SavedConnectionStoreTests: XCTestCase {
         let restoredSnapshot = coldLaunchStore.loadSnapshot()
 
         XCTAssertEqual(restoredSnapshot, originalSnapshot)
+    }
+
+    func testDefaultStoreMigratesLegacySecretsAfterResave() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
+        let legacySecrets = KeychainSecretStore(
+            service: "com.codepilot.saved-connections",
+            legacyServices: []
+        )
+        let legacyStore = SavedConnectionStore(
+            userDefaults: defaults,
+            secretStore: legacySecrets
+        )
+        let migratedStore = SavedConnectionStore(
+            userDefaults: defaults,
+            secretStore: KeychainSecretStore(
+                service: "com.ctunnel.saved-connections",
+                legacyServices: ["com.codepilot.saved-connections"]
+            )
+        )
+        let snapshot = SavedConnectionsSnapshot(
+            connections: [
+                .init(
+                    id: "lan-office",
+                    name: "Office LAN",
+                    config: .lan(
+                        host: "10.0.0.24",
+                        port: 19260,
+                        token: "legacy-token-123",
+                        bridgePublicKey: "bridge-public-key-value",
+                        otp: "654321"
+                    )
+                ),
+            ],
+            selectedConnectionID: "lan-office"
+        )
+
+        try legacyStore.saveSnapshot(snapshot)
+
+        let restored = migratedStore.loadSnapshot()
+        XCTAssertEqual(restored, snapshot)
+
+        try migratedStore.saveSnapshot(restored)
+
+        let currentSecrets = KeychainSecretStore(
+            service: "com.ctunnel.saved-connections",
+            legacyServices: []
+        )
+        XCTAssertEqual(try currentSecrets.secret(for: "saved_connection.lan-office.token"), "legacy-token-123")
+        XCTAssertEqual(try currentSecrets.secret(for: "saved_connection.lan-office.bridge_pubkey"), "bridge-public-key-value")
+        XCTAssertEqual(try currentSecrets.secret(for: "saved_connection.lan-office.otp"), "654321")
     }
 }

@@ -59,7 +59,7 @@ codex login status
 ### Clone and verify
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/mrslimslim/c2m.git
 cd c2m
 ./bin/ctunnel preflight
 ```
@@ -189,6 +189,18 @@ Current reality:
 - [Release preflight checklist](./docs/release-preflight-checklist.md)
 - [Debugging guide](./docs/debugging.md)
 - [iOS manual test checklist](./docs/ios-testing.md)
+- [App Store submission guide](./docs/app-store-submission.md)
+- [Privacy policy](./PRIVACY.md)
+- [Support](./SUPPORT.md)
+- [Contributing](./CONTRIBUTING.md)
+- [Security policy](./SECURITY.md)
+
+## License
+
+CTunnel is dual-licensed under either:
+
+- [MIT](./LICENSE-MIT)
+- [Apache-2.0](./LICENSE-APACHE)
 
 ## If you want more GitHub stars
 
@@ -204,6 +216,6 @@ The README alone will help, but the biggest star multipliers are usually:
 
 ## Contributing
 
-Issues and PRs are welcome.
+Issues and PRs are welcome. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR, and use [SECURITY.md](./SECURITY.md) for private vulnerability reporting.
 
 If this project saves you time or gives you a new workflow idea, star the repo. It helps more Codex-heavy builders discover it.

@@ -13,22 +13,32 @@ public enum KeychainSecretStoreError: Error, Equatable {
 }
 
 public final class KeychainSecretStore: @unchecked Sendable {
+    public static let defaultServiceName = "com.ctunnel.saved-connections"
+    public static let legacyServiceNames = ["com.codepilot.saved-connections"]
+
     private let service: String
+    private let legacyServices: [String]
     #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
     private let accessibility: CFString
     #endif
 
     #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
     public init(
-        service: String = "com.codepilot.saved-connections",
+        service: String = KeychainSecretStore.defaultServiceName,
+        legacyServices: [String] = KeychainSecretStore.legacyServiceNames,
         accessibility: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
     ) {
         self.service = service
+        self.legacyServices = legacyServices.filter { $0 != service }
         self.accessibility = accessibility
     }
     #else
-    public init(service: String = "com.codepilot.saved-connections") {
+    public init(
+        service: String = KeychainSecretStore.defaultServiceName,
+        legacyServices: [String] = KeychainSecretStore.legacyServiceNames
+    ) {
         self.service = service
+        self.legacyServices = legacyServices.filter { $0 != service }
     }
     #endif
 
@@ -38,7 +48,7 @@ public final class KeychainSecretStore: @unchecked Sendable {
         }
 
         let status = SecItemAdd(
-            addQuery(account: account, valueData: data) as CFDictionary,
+            addQuery(account: account, service: service, valueData: data) as CFDictionary,
             nil
         )
 
@@ -48,7 +58,7 @@ public final class KeychainSecretStore: @unchecked Sendable {
 
         if status == errSecDuplicateItem {
             let updateStatus = SecItemUpdate(
-                baseQuery(account: account) as CFDictionary,
+                baseQuery(account: account, service: service) as CFDictionary,
                 [kSecValueData as String: data] as CFDictionary
             )
             guard updateStatus == errSecSuccess else {
@@ -61,9 +71,30 @@ public final class KeychainSecretStore: @unchecked Sendable {
     }
 
     public func secret(for account: String) throws -> String? {
+        if let current = try secret(for: account, service: service) {
+            return current
+        }
+
+        for legacyService in legacyServices {
+            if let legacy = try secret(for: account, service: legacyService) {
+                return legacy
+            }
+        }
+
+        return nil
+    }
+
+    public func removeSecret(for account: String) throws {
+        try removeSecret(for: account, service: service)
+        for legacyService in legacyServices {
+            try removeSecret(for: account, service: legacyService)
+        }
+    }
+
+    private func secret(for account: String, service: String) throws -> String? {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(
-            readQuery(account: account) as CFDictionary,
+            readQuery(account: account, service: service) as CFDictionary,
             &item
         )
 
@@ -84,16 +115,16 @@ public final class KeychainSecretStore: @unchecked Sendable {
         return secret
     }
 
-    public func removeSecret(for account: String) throws {
-        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+    private func removeSecret(for account: String, service: String) throws {
+        let status = SecItemDelete(baseQuery(account: account, service: service) as CFDictionary)
         if status == errSecItemNotFound || status == errSecSuccess {
             return
         }
         throw KeychainSecretStoreError.unexpectedStatus(status)
     }
 
-    private func addQuery(account: String, valueData: Data) -> [String: Any] {
-        var query = baseQuery(account: account)
+    private func addQuery(account: String, service: String, valueData: Data) -> [String: Any] {
+        var query = baseQuery(account: account, service: service)
         query[kSecValueData as String] = valueData
         #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
         query[kSecAttrAccessible as String] = accessibility
@@ -101,14 +132,14 @@ public final class KeychainSecretStore: @unchecked Sendable {
         return query
     }
 
-    private func readQuery(account: String) -> [String: Any] {
-        var query = baseQuery(account: account)
+    private func readQuery(account: String, service: String) -> [String: Any] {
+        var query = baseQuery(account: account, service: service)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         return query
     }
 
-    private func baseQuery(account: String) -> [String: Any] {
+    private func baseQuery(account: String, service: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

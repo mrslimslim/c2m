@@ -7,3 +7,8 @@ members = [
     "crates/codepilot-relay-worker",
 ]
 resolver = "2"
+
+[workspace.package]
+homepage = "https://github.com/mrslimslim/c2m"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mrslimslim/c2m"

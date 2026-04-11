@@ -2,6 +2,10 @@
 name = "codepilot-bridge"
 version = "0.1.0"
 edition = "2024"
+description = "Rust bridge runtime and CLI for CTunnel"
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

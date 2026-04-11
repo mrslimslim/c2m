@@ -2,6 +2,10 @@
 name = "codepilot-protocol"
 version = "0.1.0"
 edition = "2024"
+description = "Wire protocol and message models shared by CTunnel clients and bridge"
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
